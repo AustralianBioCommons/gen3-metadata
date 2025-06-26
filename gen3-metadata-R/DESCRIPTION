@@ -1,0 +1,20 @@
+Package: gen3metadata
+Type: Package
+Title: Gen3 metadata tools
+Version: 0.1.0
+Author: Corey Giles [aut, cre]
+Authors@R: c(person("Corey", "Giles", role = c("aut", "cre"),
+                    email = "Corey.Giles@Baker.edu.au",
+                    comment = c(ORCID = "0000-0002-6050-1259")))
+Maintainer: Corey Giles <Corey.Giles@Baker.edu.au>
+Description: User friendly tools for downloading and manipulating gen3 metadata
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+Language: en-AU
+RoxygenNote: 7.3.2
+Imports:
+    httr,
+    jsonlite,
+    jose,
+    glue
