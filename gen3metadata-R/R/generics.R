@@ -29,16 +29,3 @@ authenticate <- function(gen3_metadata) {
 fetch_data <- function(gen3_metadata, program_name, project_code, node_label, api_version) {
     UseMethod("fetch_data")
 }
-
-#' Print gen3_metadata object
-#'
-#' Generic function to print a summary of a gen3_metadata object.
-#'
-#' @param gen3_metadata A gen3_metadata object
-#' 
-#' @return The gen3_metadata object (invisibly)
-#' 
-#' @export
-print <- function(gen3_metadata) {
-    UseMethod("print")
-}
