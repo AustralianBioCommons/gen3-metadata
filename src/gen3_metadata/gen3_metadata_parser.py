@@ -2,6 +2,7 @@ import json
 import requests
 import pandas as pd
 import jwt
+import re
 
 
 class Gen3MetadataParser:
@@ -20,6 +21,20 @@ class Gen3MetadataParser:
         self.headers = {}
         self.data_store = {}
         self.data_store_pd = {}
+    
+    def _add_quotes_to_json(self, input_str):
+        try:
+            # Try parsing as-is
+            return json.loads(input_str)
+        except json.JSONDecodeError:
+            # Add quotes around keys
+            fixed = re.sub(r'([{,]\s*)(\w+)\s*:', r'\1"\2":', input_str)
+            # Add quotes around simple string values (skip existing quoted values)
+            fixed = re.sub(r':\s*([A-Za-z0-9._:@/-]+)(?=\s*[},])', r': "\1"', fixed)
+            try:
+                return json.loads(fixed)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Could not fix JSON: {e}")
 
     def _load_api_key(self) -> dict:
         """
@@ -28,8 +43,27 @@ class Gen3MetadataParser:
         Returns:
             dict: The API key loaded from the JSON file.
         """
-        with open(self.key_file_path) as json_file:
-            return json.load(json_file)
+        try:
+            # Read the file as plain text
+            with open(self.key_file_path, "r") as f:
+                content = f.read()
+            # If the content does not contain any double or single quotes, try to fix it
+            if '"' not in content and "'" not in content:
+                return self._add_quotes_to_json(content)
+
+            # Read the file as JSON
+            with open(self.key_file_path) as json_file:
+                return json.load(json_file)
+        except FileNotFoundError as fnf_err:
+            print(f"File not found: {fnf_err}")
+            raise
+        except json.JSONDecodeError as json_err:
+            print(f"JSON decode error: {json_err}")
+            print("Please make sure the file contains valid JSON with quotes and proper formatting.")
+            raise
+        except Exception as err:
+            print(f"An unexpected error occurred while loading API key: {err}")
+            raise
 
     def _url_from_jwt(self, cred: dict) -> str:
         """
@@ -148,3 +182,31 @@ class Gen3MetadataParser:
             print(f"Converting {key} to pandas dataframe...")
             self.data_store_pd[key] = self.json_to_pd(value['data'])
         return
+
+    def fetch_data_pd(self, program_name, project_code, node_label, api_version="v0"):
+        """
+        Fetches data from the Gen3 API for a specific program, project, and node label,
+        and converts it to a pandas DataFrame.
+
+        Args:
+            program_name (str): The name of the program.
+            project_code (str): The code of the project.
+            node_label (str): The label of the node.
+            api_version (str, optional): The version of the API to use.
+                Defaults to "v0".
+        """
+        data = self.fetch_data(program_name, project_code, node_label, api_version=api_version, return_data=True)
+        return self.json_to_pd(data['data'])
+
+    def fetch_data_json(self, program_name, project_code, node_label, api_version="v0"):
+        """
+        Fetches data from the Gen3 API for a specific program, project, and node label.
+
+        Args:
+            program_name (str): The name of the program.
+            project_code (str): The code of the project.
+            node_label (str): The label of the node.
+            api_version (str, optional): The version of the API to use.
+                Defaults to "v0".
+        """
+        return self.fetch_data(program_name, project_code, node_label, api_version=api_version, return_data=True)
