@@ -182,3 +182,31 @@ class Gen3MetadataParser:
             print(f"Converting {key} to pandas dataframe...")
             self.data_store_pd[key] = self.json_to_pd(value['data'])
         return
+
+    def fetch_data_pd(self, program_name, project_code, node_label, api_version="v0"):
+        """
+        Fetches data from the Gen3 API for a specific program, project, and node label,
+        and converts it to a pandas DataFrame.
+
+        Args:
+            program_name (str): The name of the program.
+            project_code (str): The code of the project.
+            node_label (str): The label of the node.
+            api_version (str, optional): The version of the API to use.
+                Defaults to "v0".
+        """
+        data = self.fetch_data(program_name, project_code, node_label, api_version=api_version, return_data=True)
+        return self.json_to_pd(data['data'])
+
+    def fetch_data_json(self, program_name, project_code, node_label, api_version="v0"):
+        """
+        Fetches data from the Gen3 API for a specific program, project, and node label.
+
+        Args:
+            program_name (str): The name of the program.
+            project_code (str): The code of the project.
+            node_label (str): The label of the node.
+            api_version (str, optional): The version of the API to use.
+                Defaults to "v0".
+        """
+        return self.fetch_data(program_name, project_code, node_label, api_version=api_version, return_data=True)
