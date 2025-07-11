@@ -212,3 +212,40 @@ def test_data_to_pd(gen3_metadata_parser, data_store):
     # Verify conversion
     assert test_key in gen3_metadata_parser.data_store_pd
     pd.testing.assert_frame_equal(gen3_metadata_parser.data_store_pd[test_key], expected_df)
+
+
+@patch("requests.get")
+def test_fetch_data_pd(mock_get, gen3_metadata_parser, fake_api_key):
+    """Test fetch_data for successful API response."""
+    fake_response = {"data": [{"id": 1, "name": "test"}]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+
+    program_name = "test_program"
+    project_code = "test_project"
+    node_label = "subjects"
+
+    with patch("builtins.open", mock_open(read_data=json.dumps(fake_api_key))):
+        result = gen3_metadata_parser.fetch_data_pd(program_name, project_code, node_label)
+        key = f"{program_name}/{project_code}/{node_label}"
+        assert key in gen3_metadata_parser.data_store
+        assert isinstance(result, pd.DataFrame)
+        assert result.equals(pd.DataFrame(fake_response['data']))
+
+
+@patch("requests.get")
+def test_fetch_data_json(mock_get, gen3_metadata_parser, fake_api_key):
+    """Test fetch_data_json for successful API response."""
+    fake_response = {"data": [{"id": 1, "name": "test"}]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+
+    program_name = "test_program"
+    project_code = "test_project"
+    node_label = "subjects"
+
+    with patch("builtins.open", mock_open(read_data=json.dumps(fake_api_key))):
+        result = gen3_metadata_parser.fetch_data_json(program_name, project_code, node_label)
+        key = f"{program_name}/{project_code}/{node_label}"
+        assert key in gen3_metadata_parser.data_store
+        assert result == fake_response
