@@ -4,4 +4,3 @@ setuptools
 pytest
 PyJWT
 ipykernel
-dotenv
