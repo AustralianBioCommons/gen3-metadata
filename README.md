@@ -86,3 +86,47 @@ pytest tests/
 
 
 
+
+## Installation of the R version of gen3-metadata
+
+You can install the gen3metadata R tool from
+[GitHub](https://github.com/) with:
+
+``` r
+if (!require("devtools")) install.packages("devtools")
+devtools::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R")
+```
+
+The package depends on several other packages, which should hopefully be installed automatically.
+If case this doesn't happen, run:
+``` r
+install.packages(c("httr", "jsonlite", "jose", "glue"))
+```
+
+Then all you need to do is load the package.
+
+``` r
+library("gen3metadata")
+```
+
+## Usage Example
+
+This is a basic example to authenticate and load some data.
+You will need a credential file (stored in `key_file_path` in this example).
+
+``` r
+# Load the library
+library("gen3metadata")
+
+# Create the Gen3 Metadata Parser object
+gen3 <- Gen3MetadataParser(key_file_path)
+
+# Authenticate the object
+gen3 <- authenticate(gen3)
+
+# Load some data
+dat <- fetch_data(gen3,
+                  program_name = "program1",
+                  project_code = "AusDiab",
+                  node_label = "subject")
+```
