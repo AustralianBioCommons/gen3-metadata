@@ -1,7 +1,6 @@
-requests
-pandas
-setuptools
-pytest
-PyJWT
-ipykernel
-dotenv
+requests==2.32.3
+pandas==2.2.3
+setuptools==56.0.0
+pytest==8.3.5
+PyJWT==2.10.1
+ipykernel==6.29.5
