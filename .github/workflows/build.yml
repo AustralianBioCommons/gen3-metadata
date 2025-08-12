@@ -26,19 +26,23 @@ jobs:
         with:
           python-version: 3.9
 
-      - name: Install dependencies
+      - name: Install dependencies with Poetry
         run: |
-          python -m venv venv
-          source venv/bin/activate
-          pip install -r requirements.txt
+          pip install poetry
+          poetry install
+          eval $(poetry env activate)
+          poetry run python --version
 
-      - name: Cache dependencies
+      - name: Cache Poetry virtualenv
         uses: actions/cache@v3
         with:
-          path: venv
-          key: ${{ runner.os }}-venv-${{ hashFiles('requirements.txt') }}
+          path: |
+            ~/.cache/pypoetry
+            ~/.virtualenvs
+          key: ${{ runner.os }}-poetry-${{ hashFiles('poetry.lock') }}
           restore-keys: |
-            ${{ runner.os }}-venv-
+            ${{ runner.os }}-poetry-
+
   test:
     needs: build  # Ensures tests run only after a successful build
     runs-on: ubuntu-latest
@@ -52,18 +56,22 @@ jobs:
         with:
           python-version: 3.9
 
-      - name: Restore cached dependencies
+      - name: Restore Poetry virtualenv cache
         uses: actions/cache@v3
         with:
-          path: venv
-          key: ${{ runner.os }}-venv-${{ hashFiles('requirements.txt') }}
+          path: |
+            ~/.cache/pypoetry
+            ~/.virtualenvs
+          key: ${{ runner.os }}-poetry-${{ hashFiles('poetry.lock') }}
 
-      - name: Activate virtual environment and install dependencies
+      - name: Install dependencies with Poetry
         run: |
-          source venv/bin/activate
-          pip install -e .
+          pip install poetry
+          poetry install
+          eval $(poetry env activate)
+          poetry run python --version
 
       - name: Run tests
         run: |
-          source venv/bin/activate
+          eval $(poetry env activate)
           pytest tests/
