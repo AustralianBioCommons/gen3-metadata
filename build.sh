@@ -1,7 +1,5 @@
 
 #!/bin/bash
-python -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install -e .
+poetry install
+poetry eval $(poetry env activate)
+
