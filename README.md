@@ -1,11 +1,11 @@
 # gen3-metadata
 User friendly tools for downloading and manipulating gen3 metadata
 
-## Python Installation
+## User installation
 ```bash
-git clone https://github.com/AustralianBioCommons/gen3-metadata.git
-bash build.sh
+pip install gen3-metadata
 ```
+
 
 ## Usage Example
 - Notebook can be found in the `example_notebook.ipynb` file
@@ -34,11 +34,15 @@ json_data
 ```
 
 
-## Running Tests
-
-The tests are written using the `pytest` framework. 
+## Dev Installation
+- The tests are written using the `pytest` framework. 
 
 ```bash
+git clone https://github.com/AustralianBioCommons/gen3-metadata.git
+cd gen3-metadata
+pip install poetry
+poetry install
+eval $(poetry env activate)
 pytest -vv tests/
 ```
 
