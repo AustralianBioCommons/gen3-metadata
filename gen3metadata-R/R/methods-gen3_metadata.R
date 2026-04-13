@@ -63,6 +63,9 @@ authenticate.gen3_metadata <- function(gen3_metadata) {
 #' @param project_code Character string code of the project
 #' @param node_label Character string label of the node to fetch data from
 #' @param api_version Character string API version (default: "v0")
+#' @param data_release Filter for records by data release. See
+#'   \code{\link{fetch_all_metadata}} for behavior. Defaults to
+#'   \code{"latest"}. Pass \code{NULL} to disable filtering.
 #'
 #' @return A list containing the fetched data from the specified node
 #'
@@ -76,7 +79,8 @@ fetch_data.gen3_metadata <- function(gen3_metadata,
                                      program_name,
                                      project_code,
                                      node_label,
-                                     api_version = "v0") {
+                                     api_version = "v0",
+                                     data_release = "latest") {
 
     # Check that the gen3_metadata is authenticated
     if (is.null(gen3_metadata$headers)) {
@@ -107,8 +111,15 @@ fetch_data.gen3_metadata <- function(gen3_metadata,
     # Parse the JSON content as a nested list (no data.frame coercion)
     data <- jsonlite::fromJSON(content, simplifyVector = FALSE)$data
 
-    # Return the fetched data as a list
-    return(data)
+    # Apply data_release filter (no-op when data_release is NULL)
+    filtered <- filter_records_by_data_release(
+        records      = data,
+        data_release = data_release,
+        node_name    = node_label
+    )
+
+    # Return the fetched (optionally filtered) data as a list
+    return(filtered$records)
 }
 
 

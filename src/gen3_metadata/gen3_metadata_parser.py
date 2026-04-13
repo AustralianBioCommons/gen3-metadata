@@ -10,6 +10,8 @@ from gen3.auth import Gen3Auth
 from gen3.submission import Gen3Submission
 from gen3_validator.dict import DataDictionary
 
+from gen3_metadata._filter import filter_records_by_data_release
+
 
 def get_node_order(key_file=None, sub=None):
     """
@@ -65,7 +67,7 @@ class MetadataCollection:
         return types.SimpleNamespace(**self._pd)
 
 
-def fetch_all_metadata(key_file, program_name, project_code, verbose=True):
+def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_release="latest"):
     """
     Fetches metadata from all nodes in a Gen3 data dictionary.
 
@@ -81,6 +83,18 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True):
         program_name (str): The name of the program.
         project_code (str): The code of the project.
         verbose (bool): Print progress to stdout. Defaults to True.
+        data_release (str, optional): Filter records by data release.
+            Defaults to ``"latest"``.
+            - ``"latest"`` (default): per node, inspect the
+              ``data_release_date`` field and keep only records matching
+              the max ISO date. The selected date is logged per node.
+              Nodes without a ``data_release_date`` field pass through
+              unchanged with a log message.
+            - Any other string: exact, case-sensitive match on the
+              top-level ``data_release`` field. Nodes without that field
+              are passed through unchanged.
+            - ``None``: disable filtering entirely (returns all records,
+              no log messages).
 
     Returns:
         MetadataCollection: A dot-accessible object.
@@ -123,12 +137,21 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True):
             response.raise_for_status()
             json_data = response.json()
 
-            record_count = len(json_data.get("data", []))
+            raw_records = json_data.get("data") or []
+            record_count = len(raw_records)
             log(f"  [{i}/{total}] {node_name}: OK ({record_count} records)")
 
-            json_results[node_name] = json_data
-            if json_data.get("data"):
-                pd_results[node_name] = pd.json_normalize(json_data["data"])
+            filtered_records, _ = filter_records_by_data_release(
+                raw_records, data_release, node_name, log_fn=log
+            )
+            if data_release is not None and len(filtered_records) != record_count:
+                log(f"  [{i}/{total}] {node_name}: filtered to "
+                    f"{len(filtered_records)}/{record_count} records "
+                    f"(data_release={data_release!r})")
+
+            json_results[node_name] = {**json_data, "data": filtered_records}
+            if filtered_records:
+                pd_results[node_name] = pd.json_normalize(filtered_records)
             else:
                 pd_results[node_name] = pd.DataFrame()
             succeeded.append(node_name)
@@ -289,7 +312,8 @@ class Gen3MetadataParser:
             raise
 
     def fetch_data(
-        self, program_name, project_code, node_label, return_data=False, api_version="v0"
+        self, program_name, project_code, node_label, return_data=False, api_version="v0",
+        data_release="latest",
     ) -> dict:
         """
         Fetches data from the Gen3 API for a specific program, project, and node label.
@@ -302,6 +326,9 @@ class Gen3MetadataParser:
                 Defaults to False.
             api_version (str, optional): The version of the API to use.
                 Defaults to "v0".
+            data_release (str, optional): Filter records by data release.
+                See :func:`fetch_all_metadata` for behavior. Defaults to None
+                (no filtering).
 
         Returns:
             dict or None: The fetched data if return_data is True, otherwise None.
@@ -323,6 +350,16 @@ class Gen3MetadataParser:
             print(f"status code: {response.status_code}")
             response.raise_for_status()
             data = response.json()
+
+            def _log_filter(msg, _logger=self.logger):
+                _logger.info(msg)
+                print(msg)
+
+            raw_records = data.get("data") or []
+            filtered_records, _ = filter_records_by_data_release(
+                raw_records, data_release, node_label, log_fn=_log_filter
+            )
+            data = {**data, "data": filtered_records}
 
             key = f"{program_name}/{project_code}/{node_label}"
             self.data_store[key] = data
@@ -349,7 +386,8 @@ class Gen3MetadataParser:
             print(f"An error occurred: {err}")
             raise
 
-    def fetch_data_json(self, program_name, project_code, node_label, api_version="v0"):
+    def fetch_data_json(self, program_name, project_code, node_label, api_version="v0",
+                        data_release="latest"):
         """
         Fetches data from the Gen3 API for a specific program, project, and node label.
 
@@ -359,9 +397,15 @@ class Gen3MetadataParser:
             node_label (str): The label of the node.
             api_version (str, optional): The version of the API to use.
                 Defaults to "v0".
+            data_release (str, optional): Filter records by data release.
+                See :func:`fetch_all_metadata` for behavior. Defaults to None
+                (no filtering).
         """
         self.logger.info(
             f"Fetching data as JSON for {program_name}/{project_code}/{node_label} "
             f"(API version: {api_version})"
         )
-        return self.fetch_data(program_name, project_code, node_label, api_version=api_version, return_data=True)
+        return self.fetch_data(
+            program_name, project_code, node_label,
+            api_version=api_version, return_data=True, data_release=data_release,
+        )

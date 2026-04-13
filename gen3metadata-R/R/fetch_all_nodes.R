@@ -8,6 +8,20 @@
 #' @param key_file Character string path to the Gen3 credentials JSON file
 #' @param program_name Character string name of the program
 #' @param project_code Character string code of the project
+#' @param data_release Filter for records by data release.
+#'   Defaults to \code{"latest"}.
+#'   \itemize{
+#'     \item \code{"latest"} (default): per node, inspect the
+#'       \code{data_release_date} field and keep only records matching the
+#'       max ISO date. The selected date is emitted once per node via
+#'       \code{message()}. Nodes without a \code{data_release_date} field
+#'       pass through unchanged with a message.
+#'     \item Any other string: exact, case-sensitive match on the top-level
+#'       \code{data_release} field. Nodes without that field pass through
+#'       unchanged.
+#'     \item \code{NULL}: disable filtering entirely (returns all records,
+#'       no messages).
+#'   }
 #'
 #' @return A metadata_collection object. Access nodes via \code{result$subject}.
 #'   Call \code{to_df(result)} to get data.frames instead.
@@ -16,7 +30,7 @@
 #' @importFrom jsonlite fromJSON
 #' @importFrom glue glue
 #' @export
-fetch_all_metadata <- function(key_file, program_name, project_code) {
+fetch_all_metadata <- function(key_file, program_name, project_code, data_release = "latest") {
 
     # Check that the key file exists
     if (!file.exists(key_file)) {
@@ -54,9 +68,27 @@ fetch_all_metadata <- function(key_file, program_name, project_code) {
                 NULL
             } else {
                 content_text <- httr::content(res, as = "text", encoding = "UTF-8")
+                parsed_json <- jsonlite::fromJSON(content_text, simplifyVector = FALSE)$data
+                parsed_pd   <- jsonlite::fromJSON(content_text, flatten = TRUE)$data
+
+                filtered <- filter_records_by_data_release(
+                    records      = parsed_json,
+                    data_release = data_release,
+                    node_name    = node_name
+                )
+
+                if (is.data.frame(parsed_pd) && length(filtered$keep_idx) > 0) {
+                    pd_filtered <- parsed_pd[filtered$keep_idx, , drop = FALSE]
+                    rownames(pd_filtered) <- NULL
+                } else if (is.data.frame(parsed_pd)) {
+                    pd_filtered <- parsed_pd[0, , drop = FALSE]
+                } else {
+                    pd_filtered <- parsed_pd
+                }
+
                 list(
-                    json = jsonlite::fromJSON(content_text, simplifyVector = FALSE)$data,
-                    pd   = jsonlite::fromJSON(content_text, flatten = TRUE)$data
+                    json = filtered$records,
+                    pd   = pd_filtered
                 )
             }
         }, error = function(e) {

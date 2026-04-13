@@ -74,6 +74,91 @@ test_that("fetch_data method works correctly", {
 })
 
 
+test_that("fetch_data filters single node by specific data_release", {
+
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+
+    gen3 <- Gen3MetadataParser(tmp_key_file)
+
+    mock_post <- stub_request("post", uri = "https://data.test.biocommons.org.au/user/credentials/cdis/access_token")
+    mock_post <- to_return(mock_post,
+                           body = "{\"access_token\": \"fake_access_token\"}",
+                           status = 200,
+                           headers = list("Content-Type" = "application/json"))
+    gen3 <- authenticate(gen3)
+
+    mock_get <- stub_request("get", uri = "https://data.test.biocommons.org.au/api/v0/submission/program1/AusDiab/export/?node_label=subject&format=json")
+    mock_get <- to_return(
+        mock_get,
+        body = paste0(
+            "{\"data\": [",
+            "{\"id\": 1, \"data_release\": \"v1\"},",
+            "{\"id\": 2, \"data_release\": \"v2\"},",
+            "{\"id\": 3, \"data_release\": \"v1\"}",
+            "]}"
+        ),
+        status = 200,
+        headers = list("Content-Type" = "application/json")
+    )
+
+    result <- suppressMessages(
+        fetch_data(gen3, "program1", "AusDiab", "subject", data_release = "v1")
+    )
+
+    expect_type(result, "list")
+    expect_equal(length(result), 2)
+    expect_equal(result[[1]]$id, 1)
+    expect_equal(result[[2]]$id, 3)
+    expect_equal(result[[1]]$data_release, "v1")
+
+    unlink(tmp_key_file)
+    webmockr::stub_registry_clear()
+})
+
+
+test_that("fetch_data selects latest data_release_date", {
+
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+
+    gen3 <- Gen3MetadataParser(tmp_key_file)
+
+    mock_post <- stub_request("post", uri = "https://data.test.biocommons.org.au/user/credentials/cdis/access_token")
+    mock_post <- to_return(mock_post,
+                           body = "{\"access_token\": \"fake_access_token\"}",
+                           status = 200,
+                           headers = list("Content-Type" = "application/json"))
+    gen3 <- authenticate(gen3)
+
+    mock_get <- stub_request("get", uri = "https://data.test.biocommons.org.au/api/v0/submission/program1/AusDiab/export/?node_label=sample&format=json")
+    mock_get <- to_return(
+        mock_get,
+        body = paste0(
+            "{\"data\": [",
+            "{\"id\": 10, \"data_release_date\": \"2024-01-15\"},",
+            "{\"id\": 11, \"data_release_date\": \"2024-06-01\"},",
+            "{\"id\": 12, \"data_release_date\": \"2023-12-01\"}",
+            "]}"
+        ),
+        status = 200,
+        headers = list("Content-Type" = "application/json")
+    )
+
+    expect_message(
+        result <- fetch_data(gen3, "program1", "AusDiab", "sample", data_release = "latest"),
+        "2024-06-01"
+    )
+
+    expect_equal(length(result), 1)
+    expect_equal(result[[1]]$id, 11)
+    expect_equal(result[[1]]$data_release_date, "2024-06-01")
+
+    unlink(tmp_key_file)
+    webmockr::stub_registry_clear()
+})
+
+
 test_that("fetch_data handles HTTP errors", {
     
     # Create a temporary key file

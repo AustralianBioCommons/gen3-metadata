@@ -31,6 +31,36 @@ dfs.subject             # pandas DataFrame
 dfs.demographic         # pandas DataFrame
 ```
 
+### Filtering by data release
+
+`fetch_all_metadata` accepts a `data_release` argument that filters each node's records by release. The **default is `"latest"`** — each node is inspected for a `data_release_date` field and only records matching the max ISO date are returned. The selected version and date are logged per node.
+
+```python
+# Default: per node, keep records with the max data_release_date
+result = fetch_all_metadata(key_file, "program1", "project1")
+# node 'subject': selected data_release_date=2024-06-01 data_release='v2.3' (123/22494 records)
+# node 'demographic': selected data_release_date=2024-06-01 data_release='v2.3' (123/22494 records)
+# ...
+
+# Pin to a specific release (exact, case-sensitive match on data_release field)
+result = fetch_all_metadata(key_file, "program1", "project1", data_release="v2.3")
+
+# Disable filtering — return every record, no filter logs
+result = fetch_all_metadata(key_file, "program1", "project1", data_release=None)
+```
+
+Behavior per node:
+
+| `data_release` value | Behavior                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `"latest"` (default) | Keep records with the max `data_release_date` (ISO 8601). Log the selected date and version.                |
+| any other string     | Keep records where `data_release` equals that string exactly. Log the selected version and date.            |
+| `None`               | No filtering. No filter log lines emitted.                                                                  |
+
+Nodes that have neither a `data_release` nor a `data_release_date` field (for example lookup/link nodes like `program` or `project`) are passed through unchanged, with an info log noting they were not filtered. Unparseable ISO dates in `"latest"` mode are skipped with a warning.
+
+The same `data_release` argument is also available on `Gen3MetadataParser.fetch_data` and `fetch_data_json` for single-node fetches.
+
 ### List nodes
 
 `get_node_order` returns a topologically sorted list of node names from the data dictionary (parents before children).
@@ -54,8 +84,14 @@ key_file = "path/to/credentials.json"
 parser = Gen3MetadataParser(key_file)
 parser.authenticate()
 
+# Default: filters to latest data_release_date
 json_data = parser.fetch_data_json("program1", "project1", node_label="medical_history")
 json_data  # {'data': [...]}
+
+# Pin to a specific release, or pass data_release=None to disable filtering
+json_data = parser.fetch_data_json(
+    "program1", "project1", node_label="medical_history", data_release="v2.3"
+)
 
 # Convert to DataFrame if desired:
 df = pd.json_normalize(json_data["data"])
@@ -107,6 +143,47 @@ dfs$subject         # data.frame
 dfs$demographic     # data.frame
 ```
 
+### Filtering by data release
+
+`fetch_all_metadata` accepts a `data_release` argument that mirrors the Python API. The **default is `"latest"`** — each node is inspected for a `data_release_date` field and only records matching the max ISO date are kept. The selected version and date are emitted per node via `message()`.
+
+``` r
+# Default: per node, keep records with the max data_release_date
+result <- fetch_all_metadata("path/to/credentials.json", "program1", "AusDiab")
+# node 'subject': selected data_release_date=2024-06-01 data_release='v2.3' (123/22494 records)
+# node 'demographic': selected data_release_date=2024-06-01 data_release='v2.3' (123/22494 records)
+# ...
+
+# Pin to a specific release (exact, case-sensitive match on data_release field)
+result <- fetch_all_metadata(
+    "path/to/credentials.json", "program1", "AusDiab",
+    data_release = "v2.3"
+)
+
+# Disable filtering — return every record, no filter messages
+result <- fetch_all_metadata(
+    "path/to/credentials.json", "program1", "AusDiab",
+    data_release = NULL
+)
+
+# Suppress the per-node message output while keeping the filter active
+result <- suppressMessages(
+    fetch_all_metadata("path/to/credentials.json", "program1", "AusDiab")
+)
+```
+
+Behavior per node:
+
+| `data_release` value | Behavior                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------- |
+| `"latest"` (default) | Keep records with the max `data_release_date` (ISO 8601). Emit selected date and version.       |
+| any other string     | Keep records where `data_release` equals that string exactly. Emit selected version and date.   |
+| `NULL`               | No filtering. No filter messages emitted.                                                        |
+
+Nodes that have neither a `data_release` nor a `data_release_date` field are passed through unchanged with a message. Unparseable ISO dates in `"latest"` mode are skipped with a warning.
+
+The same `data_release` argument is also available on `fetch_data()` for single-node fetches.
+
 ### List nodes
 
 `get_node_order` returns a topologically sorted character vector of node names from the data dictionary.
@@ -126,10 +203,19 @@ key_file_path <- "path/to/credentials.json"
 gen3 <- Gen3MetadataParser(key_file_path)
 gen3 <- authenticate(gen3)
 
+# Default: filters to latest data_release_date
 data <- fetch_data(gen3,
                    program_name = "program1",
                    project_code = "AusDiab",
                    node_label = "subject")
+
+# Pin to a specific release, or pass data_release = NULL to disable filtering
+data <- fetch_data(gen3,
+                   program_name = "program1",
+                   project_code = "AusDiab",
+                   node_label = "subject",
+                   data_release = "v2.3")
+
 # data is a list of records
 
 # Convert to a data.frame if desired:
