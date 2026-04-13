@@ -5,6 +5,38 @@ import jwt
 import re
 import logging
 
+from gen3.auth import Gen3Auth
+from gen3.submission import Gen3Submission
+from gen3_validator.dict import DataDictionary
+
+
+def get_node_order(key_file):
+    """
+    Returns a topologically sorted list of node names from a Gen3 data dictionary.
+
+    Args:
+        key_file (str): Path to the Gen3 credentials JSON file.
+
+    Returns:
+        list: Node names in dependency order (parents before children).
+    """
+    auth = Gen3Auth(refresh_file=key_file)
+    sub = Gen3Submission(auth)
+    gen3dd = sub.get_dictionary_all()
+
+    dd = DataDictionary(schema_path='')
+    dd.schema = gen3dd
+    dd.nodes = dd.get_nodes()
+    dd.node_pairs = dd.get_all_node_pairs(excluded_nodes=[
+        "_definitions",
+        "_terms",
+        "_settings",
+        "program",
+        "metaschema",
+        "root"
+    ])
+    return dd.get_node_order(edges=dd.node_pairs)
+
 
 class Gen3MetadataParser:
     """

@@ -2,7 +2,7 @@ import pytest
 import json
 from unittest.mock import patch, mock_open, MagicMock
 from requests.exceptions import HTTPError, RequestException
-from gen3_metadata.gen3_metadata_parser import Gen3MetadataParser 
+from gen3_metadata.gen3_metadata_parser import Gen3MetadataParser, get_node_order
 import requests
 import pandas as pd
 import jwt
@@ -249,3 +249,62 @@ def test_fetch_data_json(mock_get, gen3_metadata_parser, fake_api_key):
         key = f"{program_name}/{project_code}/{node_label}"
         assert key in gen3_metadata_parser.data_store
         assert result == fake_response
+
+
+@pytest.fixture
+def mock_gen3_dictionary():
+    """A mock Gen3 data dictionary with subject, sample, and demographic nodes."""
+    return {
+        "subject": {
+            "id": "subject",
+            "category": "administrative",
+            "properties": {
+                "submitter_id": {"type": "string"},
+                "project_id": {"type": "string"}
+            },
+            "links": [
+                {"target_type": "project"}
+            ]
+        },
+        "sample": {
+            "id": "sample",
+            "category": "biospecimen",
+            "properties": {
+                "submitter_id": {"type": "string"},
+                "sample_type": {"type": "string"}
+            },
+            "links": [
+                {"target_type": "subject"}
+            ]
+        },
+        "demographic": {
+            "id": "demographic",
+            "category": "clinical",
+            "properties": {
+                "submitter_id": {"type": "string"},
+                "age": {"type": "integer"}
+            },
+            "links": [
+                {"target_type": "subject"}
+            ]
+        }
+    }
+
+
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_get_node_order(mock_auth, mock_sub_class, mock_gen3_dictionary):
+    """Test get_node_order returns nodes in topological order."""
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    result = get_node_order("fake_credentials.json")
+
+    # subject must come before sample and demographic
+    assert result.index("subject") < result.index("sample")
+    assert result.index("subject") < result.index("demographic")
+    # All three nodes should be present
+    assert "subject" in result
+    assert "sample" in result
+    assert "demographic" in result

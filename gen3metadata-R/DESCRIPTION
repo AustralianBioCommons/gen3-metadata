@@ -17,7 +17,8 @@ Imports:
     httr,
     jsonlite,
     jose,
-    glue
+    glue,
+    reticulate
 Suggests: 
     testthat (>= 3.0.0),
     webmockr
