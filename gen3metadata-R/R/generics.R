@@ -22,9 +22,9 @@ authenticate <- function(gen3_metadata) {
 #' @param project_code Character string code of the project
 #' @param node_label Character string label of the node to fetch data from
 #' @param api_version Character string API version (default: "v0")
-#' 
-#' @return Data frame containing the fetched data
-#' 
+#'
+#' @return A list containing the fetched data
+#'
 #' @export
 fetch_data <- function(gen3_metadata, program_name, project_code, node_label, api_version) {
     UseMethod("fetch_data")

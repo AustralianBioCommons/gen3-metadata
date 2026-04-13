@@ -2,7 +2,8 @@ import pytest
 import json
 from unittest.mock import patch, mock_open, MagicMock
 from requests.exceptions import HTTPError, RequestException
-from gen3_metadata.gen3_metadata_parser import Gen3MetadataParser, get_node_order
+from gen3_metadata.gen3_metadata_parser import Gen3MetadataParser, get_node_order, fetch_all_metadata, MetadataCollection
+import types
 import requests
 import pandas as pd
 import jwt
@@ -142,21 +143,6 @@ def test_authenticate_missing_token(mock_post, gen3_metadata_parser, fake_api_ke
             gen3_metadata_parser.authenticate()
 
 
-def test_json_to_pd(gen3_metadata_parser):
-    """Test json_to_pd method."""
-    json_data = [
-        {"id": 1, "name": "Josh", "age": 30},
-        {"id": 2, "name": "Harris", "age": 25}
-    ]
-    expected_df = pd.DataFrame({
-        "id": [1, 2],
-        "name": ["Josh", "Harris"],
-        "age": [30, 25]
-    })
-    result_df = gen3_metadata_parser.json_to_pd(json_data)
-    pd.testing.assert_frame_equal(result_df, expected_df)
-
-
 @patch("requests.get")
 def test_fetch_data_success(mock_get, gen3_metadata_parser, fake_api_key):
     """Test fetch_data for successful API response."""
@@ -188,49 +174,6 @@ def test_fetch_data_http_error(mock_get, gen3_metadata_parser, fake_api_key):
     with pytest.raises(requests.exceptions.HTTPError):
         with patch("builtins.open", mock_open(read_data=json.dumps(fake_api_key))):
             gen3_metadata_parser.fetch_data(program_name, project_code, node_label)
-
-
-@pytest.fixture
-def data_store():
-    return {
-        'data': [
-            {'project_id': 'project1', 'submitter_id': 'subject_bdf5291449'},
-            {'project_id': 'project1', 'submitter_id': 'subject_acf4281442'}
-        ]
-    }
-
-def test_data_to_pd(gen3_metadata_parser, data_store):
-    """Test data_to_pd method."""
-    json_data = data_store
-    test_key = "program1/project1/subject"
-    # Populate data_store with mock data
-    gen3_metadata_parser.data_store[test_key] = json_data
-    # Expected DataFrame
-    expected_df = pd.DataFrame({"project_id": ['project1', 'project1'], "submitter_id": ["subject_bdf5291449", "subject_acf4281442"]})
-    # Call data_to_pd
-    gen3_metadata_parser.data_to_pd()
-    # Verify conversion
-    assert test_key in gen3_metadata_parser.data_store_pd
-    pd.testing.assert_frame_equal(gen3_metadata_parser.data_store_pd[test_key], expected_df)
-
-
-@patch("requests.get")
-def test_fetch_data_pd(mock_get, gen3_metadata_parser, fake_api_key):
-    """Test fetch_data for successful API response."""
-    fake_response = {"data": [{"id": 1, "name": "test"}]}
-    mock_get.return_value.status_code = 200
-    mock_get.return_value.json.return_value = fake_response
-
-    program_name = "test_program"
-    project_code = "test_project"
-    node_label = "subjects"
-
-    with patch("builtins.open", mock_open(read_data=json.dumps(fake_api_key))):
-        result = gen3_metadata_parser.fetch_data_pd(program_name, project_code, node_label)
-        key = f"{program_name}/{project_code}/{node_label}"
-        assert key in gen3_metadata_parser.data_store
-        assert isinstance(result, pd.DataFrame)
-        assert result.equals(pd.DataFrame(fake_response['data']))
 
 
 @patch("requests.get")
@@ -308,3 +251,105 @@ def test_get_node_order(mock_auth, mock_sub_class, mock_gen3_dictionary):
     assert "subject" in result
     assert "sample" in result
     assert "demographic" in result
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata(mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary):
+    """Test fetch_all_metadata returns a MetadataCollection with dot-access and to_df()."""
+    # Mock Gen3Auth
+    mock_auth_instance = MagicMock()
+    mock_auth_instance.endpoint = "https://test.example.com"
+    mock_auth_class.return_value = mock_auth_instance
+
+    # Mock Gen3Submission
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    # Mock data fetch responses
+    fake_response = {"data": [{"id": 1, "name": "test"}]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    result = fetch_all_metadata("fake_credentials.json", "prog", "proj", verbose=False)
+
+    # Returns MetadataCollection
+    assert isinstance(result, MetadataCollection)
+
+    # Dot-access for JSON
+    assert result.subject == fake_response
+    assert result.sample == fake_response
+    assert result.demographic == fake_response
+
+    # to_df() returns dot-accessible DataFrames
+    dfs = result.to_df()
+    assert isinstance(dfs, types.SimpleNamespace)
+    assert isinstance(dfs.subject, pd.DataFrame)
+    assert dfs.subject.equals(pd.DataFrame(fake_response["data"]))
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_skips_failed_nodes(mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary):
+    """Test that fetch_all_metadata skips nodes that fail and continues."""
+    mock_auth_instance = MagicMock()
+    mock_auth_instance.endpoint = "https://test.example.com"
+    mock_auth_class.return_value = mock_auth_instance
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    # sample fails with 403; all other nodes succeed
+    def fake_get(url, **kwargs):
+        resp = MagicMock()
+        if "node_label=sample" in url:
+            resp.status_code = 403
+            err = requests.exceptions.HTTPError("403 Forbidden")
+            err.response = resp
+            resp.raise_for_status.side_effect = err
+        else:
+            resp.status_code = 200
+            resp.json.return_value = {"data": [{"id": 1}]}
+            resp.raise_for_status.return_value = None
+        return resp
+
+    mock_get.side_effect = fake_get
+
+    result = fetch_all_metadata("fake_credentials.json", "prog", "proj", verbose=False)
+
+    # Successful nodes present
+    assert hasattr(result, "subject")
+    assert hasattr(result, "demographic")
+
+    # Failed node absent
+    assert not hasattr(result, "sample")
+    assert not hasattr(result.to_df(), "sample")
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_empty_data(mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary):
+    """Test that empty data returns an empty DataFrame via to_df()."""
+    mock_auth_instance = MagicMock()
+    mock_auth_instance.endpoint = "https://test.example.com"
+    mock_auth_class.return_value = mock_auth_instance
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {"data": []}
+    mock_get.return_value.raise_for_status.return_value = None
+
+    result = fetch_all_metadata("fake_credentials.json", "prog", "proj", verbose=False)
+
+    assert result.subject == {"data": []}
+    assert isinstance(result.to_df().subject, pd.DataFrame)
+    assert result.to_df().subject.empty

@@ -55,15 +55,17 @@ authenticate.gen3_metadata <- function(gen3_metadata) {
 #'
 #' This method fetches data from a specific node in the Gen3 API
 #' for a given program and project. The object must be authenticated first.
+#' Returns the raw JSON data as a nested list. Users can convert to a
+#' data.frame themselves using e.g. \code{do.call(rbind, lapply(result, as.data.frame))}.
 #'
 #' @param gen3_metadata An authenticated gen3_metadata object
 #' @param program_name Character string name of the program
-#' @param project_code Character string code of the project  
+#' @param project_code Character string code of the project
 #' @param node_label Character string label of the node to fetch data from
 #' @param api_version Character string API version (default: "v0")
-#' 
-#' @return Data frame containing the fetched data from the specified node
-#' 
+#'
+#' @return A list containing the fetched data from the specified node
+#'
 #' @method fetch_data gen3_metadata
 #' @rdname fetch_data
 #' @importFrom glue glue
@@ -80,7 +82,7 @@ fetch_data.gen3_metadata <- function(gen3_metadata,
     if (is.null(gen3_metadata$headers)) {
         stop("Gen3 metadata object is not authenticated. Please authenticate first.")
     }
-    
+
     # Construct the URL for the API request
     url <- glue::glue(
         "{gen3_metadata$base_url}/api/{api_version}/submission",
@@ -93,7 +95,7 @@ fetch_data.gen3_metadata <- function(gen3_metadata,
         gen3_metadata$headers,
         query = list(node_label = node_label, format = "json")
     )
-    
+
     # Check for errors in the response
     if (httr::http_error(res)) {
         stop("Failed to fetch data from the Gen3 API. Please check your parameters and authentication.")
@@ -101,11 +103,11 @@ fetch_data.gen3_metadata <- function(gen3_metadata,
 
     # Extract the content from the response
     content <- httr::content(res, as = "text", encoding = "UTF-8")
-    
-    # Parse the JSON content and return the data
-    data <- jsonlite::fromJSON(content, flatten = TRUE)$data
 
-    # Return the fetched data
+    # Parse the JSON content as a nested list (no data.frame coercion)
+    data <- jsonlite::fromJSON(content, simplifyVector = FALSE)$data
+
+    # Return the fetched data as a list
     return(data)
 }
 

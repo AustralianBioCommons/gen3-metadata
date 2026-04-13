@@ -4,24 +4,32 @@ import pandas as pd
 import jwt
 import re
 import logging
+import types
 
 from gen3.auth import Gen3Auth
 from gen3.submission import Gen3Submission
 from gen3_validator.dict import DataDictionary
 
 
-def get_node_order(key_file):
+def get_node_order(key_file=None, sub=None):
     """
     Returns a topologically sorted list of node names from a Gen3 data dictionary.
 
     Args:
-        key_file (str): Path to the Gen3 credentials JSON file.
+        key_file (str, optional): Path to the Gen3 credentials JSON file.
+            Required if `sub` is not provided.
+        sub (Gen3Submission, optional): An existing Gen3Submission instance
+            to reuse (avoids re-authenticating).
 
     Returns:
         list: Node names in dependency order (parents before children).
     """
-    auth = Gen3Auth(refresh_file=key_file)
-    sub = Gen3Submission(auth)
+    if sub is None:
+        if key_file is None:
+            raise ValueError("Either key_file or sub must be provided.")
+        auth = Gen3Auth(refresh_file=key_file)
+        sub = Gen3Submission(auth)
+
     gen3dd = sub.get_dictionary_all()
 
     dd = DataDictionary(schema_path='')
@@ -36,6 +44,109 @@ def get_node_order(key_file):
         "root"
     ])
     return dd.get_node_order(edges=dd.node_pairs)
+
+
+class MetadataCollection:
+    """
+    A dot-accessible collection of node metadata (JSON dicts).
+
+    Access individual nodes as attributes, e.g. collection.subject.
+    Call to_df() to get a similar object with pandas DataFrames.
+    """
+
+    def __init__(self, json_results, pd_results):
+        self._json = json_results
+        self._pd = pd_results
+        for name, data in json_results.items():
+            setattr(self, name, data)
+
+    def to_df(self):
+        """Returns a dot-accessible object where each node is a pandas DataFrame."""
+        return types.SimpleNamespace(**self._pd)
+
+
+def fetch_all_metadata(key_file, program_name, project_code, verbose=True):
+    """
+    Fetches metadata from all nodes in a Gen3 data dictionary.
+
+    Retrieves nodes in topological order and fetches data for each,
+    returning a dot-accessible object of JSON dicts. Call .to_df()
+    on the result to get DataFrames instead.
+
+    Uses a single Gen3Auth authentication context for all requests,
+    avoiding double-authentication issues that can cause 403 errors.
+
+    Args:
+        key_file (str): Path to the Gen3 credentials JSON file.
+        program_name (str): The name of the program.
+        project_code (str): The code of the project.
+        verbose (bool): Print progress to stdout. Defaults to True.
+
+    Returns:
+        MetadataCollection: A dot-accessible object.
+            - result.<node_name> returns the raw JSON dict.
+            - result.to_df().<node_name> returns a pandas DataFrame.
+    """
+    logger = logging.getLogger("gen3_metadata")
+
+    def log(msg):
+        logger.info(msg)
+        if verbose:
+            print(msg)
+
+    log(f"fetch_all_metadata: starting for {program_name}/{project_code}")
+
+    # Single authentication context for the whole operation
+    auth = Gen3Auth(refresh_file=key_file)
+    sub = Gen3Submission(auth)
+    api_url = auth.endpoint
+
+    # Get data dictionary and compute topological node order (reusing auth)
+    log("fetch_all_metadata: fetching data dictionary...")
+    nodes = get_node_order(sub=sub)
+    total = len(nodes)
+    log(f"fetch_all_metadata: {total} nodes to fetch")
+
+    json_results = {}
+    pd_results = {}
+    succeeded = []
+    failed = []
+
+    for i, node_name in enumerate(nodes, 1):
+        log(f"  [{i}/{total}] fetching '{node_name}'...")
+        url = (
+            f"{api_url}/api/v0/submission/{program_name}/{project_code}/"
+            f"export/?node_label={node_name}&format=json"
+        )
+        try:
+            response = requests.get(url, auth=auth)
+            response.raise_for_status()
+            json_data = response.json()
+
+            record_count = len(json_data.get("data", []))
+            log(f"  [{i}/{total}] {node_name}: OK ({record_count} records)")
+
+            json_results[node_name] = json_data
+            if json_data.get("data"):
+                pd_results[node_name] = pd.json_normalize(json_data["data"])
+            else:
+                pd_results[node_name] = pd.DataFrame()
+            succeeded.append(node_name)
+        except requests.exceptions.HTTPError as e:
+            status = getattr(e.response, "status_code", "?")
+            log(f"  [{i}/{total}] {node_name}: FAILED (HTTP {status})")
+            logger.warning(f"fetch_all_metadata: {node_name} → HTTP {status}")
+            failed.append(node_name)
+        except Exception as e:
+            log(f"  [{i}/{total}] {node_name}: FAILED ({e})")
+            logger.warning(f"fetch_all_metadata: {node_name} → {e}")
+            failed.append(node_name)
+
+    log(f"fetch_all_metadata: done — {len(succeeded)}/{total} succeeded, {len(failed)} failed")
+    if failed:
+        log(f"fetch_all_metadata: failed nodes: {', '.join(failed)}")
+
+    return MetadataCollection(json_results, pd_results)
 
 
 class Gen3MetadataParser:
@@ -54,7 +165,6 @@ class Gen3MetadataParser:
         self.key_file_path = key_file_path
         self.headers = {}
         self.data_store = {}
-        self.data_store_pd = {}
         if logger is None:
             self.logger = logging.getLogger("gen3_metadata")
         else:
@@ -178,19 +288,6 @@ class Gen3MetadataParser:
             print(f"An unexpected error occurred during authentication: {err}")
             raise
 
-    def json_to_pd(self, json_data) -> pd.DataFrame:
-        """
-        Converts JSON data to a pandas DataFrame.
-
-        Args:
-            json_data (dict): The JSON data to convert.
-
-        Returns:
-            pandas.DataFrame: The converted pandas DataFrame.
-        """
-        self.logger.debug("Converting JSON data to pandas DataFrame.")
-        return pd.json_normalize(json_data)
-
     def fetch_data(
         self, program_name, project_code, node_label, return_data=False, api_version="v0"
     ) -> dict:
@@ -250,52 +347,6 @@ class Gen3MetadataParser:
         except Exception as err:
             self.logger.error(f"An error occurred while fetching data: {err}")
             print(f"An error occurred: {err}")
-            raise
-
-    def data_to_pd(self) -> None:
-        """
-        Converts all fetched JSON data in the data store to pandas DataFrames.
-        """
-        self.logger.info("Converting all fetched JSON data in data_store to pandas DataFrames.")
-        for key, value in self.data_store.items():
-            self.logger.info(f"Converting {key} to pandas dataframe...")
-            print(f"Converting {key} to pandas dataframe...")
-            try:
-                self.data_store_pd[key] = self.json_to_pd(value['data'])
-                self.logger.debug(f"Conversion successful for {key}.")
-            except Exception as e:
-                self.logger.error(f"Failed to convert {key} to pandas DataFrame: {e}")
-                print(f"Failed to convert {key} to pandas DataFrame: {e}")
-        self.logger.info("All available data converted to pandas DataFrames.")
-        return
-
-    def fetch_data_pd(self, program_name, project_code, node_label, api_version="v0"):
-        """
-        Fetches data from the Gen3 API for a specific program, project, and node label,
-        and converts it to a pandas DataFrame.
-
-        Args:
-            program_name (str): The name of the program.
-            project_code (str): The code of the project.
-            node_label (str): The label of the node.
-            api_version (str, optional): The version of the API to use.
-                Defaults to "v0".
-        """
-        self.logger.info(
-            f"Fetching data as pandas DataFrame for {program_name}/{project_code}/{node_label} "
-            f"(API version: {api_version})"
-        )
-        data = self.fetch_data(program_name, project_code, node_label, api_version=api_version, return_data=True)
-        try:
-            df = self.json_to_pd(data['data'])
-            self.logger.info(
-                f"Successfully converted data to pandas DataFrame for "
-                f"{program_name}/{project_code}/{node_label}"
-            )
-            return df
-        except Exception as e:
-            self.logger.error(f"Failed to convert fetched data to pandas DataFrame: {e}")
-            print(f"Failed to convert fetched data to pandas DataFrame: {e}")
             raise
 
     def fetch_data_json(self, program_name, project_code, node_label, api_version="v0"):

@@ -57,17 +57,14 @@ test_that("fetch_data method works correctly", {
     # Call fetch_data and check the result
     result <- fetch_data(gen3, "program1", "AusDiab", "subject")
 
-    # Check that the result is a data frame
-    expect_s3_class(result, "data.frame")
+    # Check that the result is a list (nested JSON), not a data.frame
+    expect_type(result, "list")
+    expect_false(is.data.frame(result))
 
-    # Check that the data frame has the expected columns
-    expect_true("id" %in% colnames(result))
-    expect_true("name" %in% colnames(result))
-
-    # Check that the data frame contains the expected data
-    expect_equal(nrow(result), 1)
-    expect_equal(result$id, 1)
-    expect_equal(result$name, "test")
+    # Check that the list contains one record with the expected fields
+    expect_equal(length(result), 1)
+    expect_equal(result[[1]]$id, 1)
+    expect_equal(result[[1]]$name, "test")
 
     # Clean up temporary file
     unlink(tmp_key_file)
