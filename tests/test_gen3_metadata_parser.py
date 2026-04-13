@@ -1,8 +1,10 @@
 import pytest
 import json
+import logging
 from unittest.mock import patch, mock_open, MagicMock
 from requests.exceptions import HTTPError, RequestException
 from gen3_metadata.gen3_metadata_parser import Gen3MetadataParser, get_node_order, fetch_all_metadata, MetadataCollection
+from gen3_metadata._filter import filter_records_by_data_release
 import types
 import requests
 import pandas as pd
@@ -329,6 +331,495 @@ def test_fetch_all_metadata_skips_failed_nodes(mock_auth_class, mock_sub_class, 
     # Failed node absent
     assert not hasattr(result, "sample")
     assert not hasattr(result.to_df(), "sample")
+
+
+# ---------------------------------------------------------------------------
+# Helper-level tests: filter_records_by_data_release
+# ---------------------------------------------------------------------------
+
+
+def test_filter_records_data_release_none_passthrough():
+    """data_release=None returns records unchanged."""
+    records = [
+        {"id": 1, "data_release": "v1"},
+        {"id": 2, "data_release": "v2"},
+    ]
+    filtered, keep_idx = filter_records_by_data_release(records, None, "subject")
+    assert filtered == records
+    assert keep_idx == [0, 1]
+
+
+def test_filter_records_data_release_exact_match():
+    """Specific string matches exactly on data_release field."""
+    records = [
+        {"id": 1, "data_release": "v1"},
+        {"id": 2, "data_release": "v2"},
+        {"id": 3, "data_release": "v1"},
+    ]
+    filtered, keep_idx = filter_records_by_data_release(records, "v1", "subject")
+    assert filtered == [
+        {"id": 1, "data_release": "v1"},
+        {"id": 3, "data_release": "v1"},
+    ]
+    assert keep_idx == [0, 2]
+
+
+def test_filter_records_data_release_specific_missing_column(caplog):
+    """Node has no data_release field anywhere -> pass through + info log."""
+    records = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+    with caplog.at_level(logging.INFO, logger="gen3_metadata"):
+        filtered, keep_idx = filter_records_by_data_release(records, "v1", "demographic")
+    assert filtered == records
+    assert keep_idx == [0, 1]
+    assert any("demographic" in rec.message and "data_release" in rec.message
+               for rec in caplog.records)
+
+
+def test_filter_records_data_release_specific_drops_missing_field(caplog):
+    """Mix of records with/without data_release field; missing rows dropped."""
+    records = [
+        {"id": 1, "data_release": "v1"},
+        {"id": 2},  # no data_release field
+        {"id": 3, "data_release": "v1"},
+        {"id": 4, "data_release": "v2"},
+    ]
+    with caplog.at_level(logging.DEBUG, logger="gen3_metadata"):
+        filtered, keep_idx = filter_records_by_data_release(records, "v1", "subject")
+    assert filtered == [
+        {"id": 1, "data_release": "v1"},
+        {"id": 3, "data_release": "v1"},
+    ]
+    assert keep_idx == [0, 2]
+
+
+def test_filter_records_data_release_latest(caplog):
+    """data_release='latest' picks max ISO date and filters."""
+    records = [
+        {"id": 10, "data_release_date": "2024-01-15"},
+        {"id": 11, "data_release_date": "2024-06-01"},
+        {"id": 12, "data_release_date": "2023-12-01"},
+        {"id": 13, "data_release_date": "2024-06-01"},
+    ]
+    with caplog.at_level(logging.INFO, logger="gen3_metadata"):
+        filtered, keep_idx = filter_records_by_data_release(records, "latest", "sample")
+    assert filtered == [
+        {"id": 11, "data_release_date": "2024-06-01"},
+        {"id": 13, "data_release_date": "2024-06-01"},
+    ]
+    assert keep_idx == [1, 3]
+    # Selection logged exactly once per node
+    selection_logs = [rec for rec in caplog.records
+                      if "selected" in rec.message and "2024-06-01" in rec.message]
+    assert len(selection_logs) == 1
+    assert "sample" in selection_logs[0].message
+
+
+def test_filter_records_data_release_latest_unparseable_dates(caplog):
+    """Unparseable dates are skipped; max is computed from parseable subset."""
+    records = [
+        {"id": 1, "data_release_date": "2024-01-15"},
+        {"id": 2, "data_release_date": "not-a-date"},
+        {"id": 3, "data_release_date": "2024-03-01"},
+    ]
+    with caplog.at_level(logging.WARNING, logger="gen3_metadata"):
+        filtered, keep_idx = filter_records_by_data_release(records, "latest", "sample")
+    assert keep_idx == [2]
+    assert filtered == [{"id": 3, "data_release_date": "2024-03-01"}]
+    # Warning about unparseable dates
+    assert any("not-a-date" in rec.message or "unparseable" in rec.message.lower()
+               for rec in caplog.records)
+
+
+def test_filter_records_data_release_latest_all_missing(caplog):
+    """No record has data_release_date -> pass through + info log."""
+    records = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+    with caplog.at_level(logging.INFO, logger="gen3_metadata"):
+        filtered, keep_idx = filter_records_by_data_release(records, "latest", "demographic")
+    assert filtered == records
+    assert keep_idx == [0, 1]
+    assert any("demographic" in rec.message for rec in caplog.records)
+
+
+def test_filter_records_data_release_latest_no_date_column_but_release_column(caplog):
+    """Node has data_release but no data_release_date; 'latest' -> pass through."""
+    records = [
+        {"id": 1, "data_release": "v1"},
+        {"id": 2, "data_release": "v2"},
+    ]
+    with caplog.at_level(logging.INFO, logger="gen3_metadata"):
+        filtered, keep_idx = filter_records_by_data_release(records, "latest", "subject")
+    assert filtered == records
+    assert keep_idx == [0, 1]
+
+
+def test_filter_records_data_release_empty_list():
+    """Empty record list returns empty result cleanly."""
+    filtered, keep_idx = filter_records_by_data_release([], "v1", "subject")
+    assert filtered == []
+    assert keep_idx == []
+
+
+def test_filter_records_log_fn_callback_latest():
+    """Custom log_fn receives the selection message for 'latest'."""
+    messages = []
+    records = [
+        {"id": 10, "data_release_date": "2024-01-15"},
+        {"id": 11, "data_release_date": "2024-06-01"},
+    ]
+    filter_records_by_data_release(
+        records, "latest", "sample", log_fn=messages.append
+    )
+    assert any("2024-06-01" in m and "selected" in m for m in messages)
+
+
+def test_filter_records_log_fn_callback_specific():
+    """Custom log_fn receives the selection message for exact match."""
+    messages = []
+    records = [
+        {"id": 1, "data_release": "v1"},
+        {"id": 2, "data_release": "v2"},
+    ]
+    filter_records_by_data_release(
+        records, "v1", "subject", log_fn=messages.append
+    )
+    assert any("v1" in m and "selected" in m for m in messages)
+
+
+def test_filter_records_latest_log_includes_version_and_date():
+    """'latest' selection log contains BOTH data_release_date AND data_release."""
+    messages = []
+    records = [
+        {"id": 1, "data_release": "v2.3", "data_release_date": "2024-06-01"},
+        {"id": 2, "data_release": "v2.3", "data_release_date": "2024-06-01"},
+        {"id": 3, "data_release": "v2.2", "data_release_date": "2024-01-15"},
+    ]
+    filter_records_by_data_release(
+        records, "latest", "subject", log_fn=messages.append
+    )
+    selection = [m for m in messages if "selected" in m]
+    assert len(selection) == 1
+    msg = selection[0]
+    assert "2024-06-01" in msg
+    assert "v2.3" in msg
+    assert "data_release_date" in msg
+    assert "data_release=" in msg
+
+
+def test_filter_records_specific_log_includes_version_and_date():
+    """Exact-match selection log contains BOTH data_release AND data_release_date."""
+    messages = []
+    records = [
+        {"id": 1, "data_release": "v2.3", "data_release_date": "2024-06-01"},
+        {"id": 2, "data_release": "v2.3", "data_release_date": "2024-06-01"},
+        {"id": 3, "data_release": "v2.2", "data_release_date": "2024-01-15"},
+    ]
+    filter_records_by_data_release(
+        records, "v2.3", "subject", log_fn=messages.append
+    )
+    selection = [m for m in messages if "selected" in m]
+    assert len(selection) == 1
+    msg = selection[0]
+    assert "v2.3" in msg
+    assert "2024-06-01" in msg
+    assert "data_release=" in msg
+    assert "data_release_date=" in msg
+
+
+def test_filter_records_latest_log_handles_missing_version():
+    """'latest' on records without data_release field -> log date only, no crash."""
+    messages = []
+    records = [
+        {"id": 1, "data_release_date": "2024-06-01"},
+        {"id": 2, "data_release_date": "2024-01-15"},
+    ]
+    filter_records_by_data_release(
+        records, "latest", "subject", log_fn=messages.append
+    )
+    selection = [m for m in messages if "selected" in m]
+    assert len(selection) == 1
+    assert "2024-06-01" in selection[0]
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_default_is_latest(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, capsys
+):
+    """Default data_release is 'latest' — calling with no arg still filters."""
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    fake_response = {"data": [
+        {"id": 10, "data_release_date": "2024-01-15"},
+        {"id": 11, "data_release_date": "2024-06-01"},
+    ]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    # No data_release arg — should use default "latest"
+    result = fetch_all_metadata(
+        "fake_credentials.json", "prog", "proj", verbose=True
+    )
+
+    assert result.subject["data"] == [{"id": 11, "data_release_date": "2024-06-01"}]
+    captured = capsys.readouterr()
+    assert "2024-06-01" in captured.out
+    assert "selected" in captured.out
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_none_disables_filtering(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, capsys
+):
+    """Explicit data_release=None disables filtering; no log lines emitted."""
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    fake_response = {"data": [
+        {"id": 10, "data_release_date": "2024-01-15"},
+        {"id": 11, "data_release_date": "2024-06-01"},
+    ]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    result = fetch_all_metadata(
+        "fake_credentials.json", "prog", "proj", verbose=False, data_release=None
+    )
+
+    # All records returned unfiltered
+    assert result.subject["data"] == fake_response["data"]
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_latest_prints_selection(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, capsys
+):
+    """fetch_all_metadata with verbose=True prints the selected date to stdout."""
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    fake_response = {"data": [
+        {"id": 10, "data_release_date": "2024-01-15"},
+        {"id": 11, "data_release_date": "2024-06-01"},
+        {"id": 12, "data_release_date": "2023-12-01"},
+    ]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    fetch_all_metadata(
+        "fake_credentials.json", "prog", "proj",
+        verbose=True, data_release="latest"
+    )
+
+    captured = capsys.readouterr()
+    # Selection message printed for at least one node
+    assert "2024-06-01" in captured.out
+    assert "selected" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: fetch_all_metadata + fetch_data with data_release
+# ---------------------------------------------------------------------------
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_filters_by_data_release(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary
+):
+    """fetch_all_metadata with a specific data_release filters each node's records."""
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    fake_response = {"data": [
+        {"id": 1, "data_release": "v1"},
+        {"id": 2, "data_release": "v2"},
+        {"id": 3, "data_release": "v1"},
+    ]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    result = fetch_all_metadata(
+        "fake_credentials.json", "prog", "proj",
+        verbose=False, data_release="v1"
+    )
+
+    # JSON filtered
+    assert result.subject == {"data": [
+        {"id": 1, "data_release": "v1"},
+        {"id": 3, "data_release": "v1"},
+    ]}
+    # DataFrame filtered and aligned
+    df = result.to_df().subject
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 2
+    assert list(df["id"]) == [1, 3]
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_latest(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, caplog
+):
+    """fetch_all_metadata with data_release='latest' picks max date per node."""
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    fake_response = {"data": [
+        {"id": 10, "data_release_date": "2024-01-15"},
+        {"id": 11, "data_release_date": "2024-06-01"},
+        {"id": 12, "data_release_date": "2023-12-01"},
+    ]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    with caplog.at_level(logging.INFO, logger="gen3_metadata"):
+        result = fetch_all_metadata(
+            "fake_credentials.json", "prog", "proj",
+            verbose=False, data_release="latest"
+        )
+
+    # Each node has only the latest date
+    assert result.subject["data"] == [{"id": 11, "data_release_date": "2024-06-01"}]
+    # Selection log captured for at least one node
+    assert any("2024-06-01" in rec.message and "selected" in rec.message
+               for rec in caplog.records)
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_no_release_column_passthrough(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary
+):
+    """Node without release fields + specific data_release -> returned unchanged."""
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    fake_response = {"data": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    result = fetch_all_metadata(
+        "fake_credentials.json", "prog", "proj",
+        verbose=False, data_release="v1"
+    )
+
+    # Unchanged (pass-through)
+    assert result.subject == fake_response
+    assert len(result.to_df().subject) == 2
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_nested_release_field(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary
+):
+    """Filter operates on top-level data_release only; nested 'metadata.data_release'
+    flattened by json_normalize must not match."""
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    # Each record has a nested 'metadata.data_release' but NO top-level one.
+    fake_response = {"data": [
+        {"id": 1, "metadata": {"data_release": "v1"}},
+        {"id": 2, "metadata": {"data_release": "v2"}},
+    ]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    result = fetch_all_metadata(
+        "fake_credentials.json", "prog", "proj",
+        verbose=False, data_release="v1"
+    )
+
+    # No top-level data_release field -> pass through unchanged
+    assert result.subject == fake_response
+    df = result.to_df().subject
+    assert len(df) == 2
+    # The flattened column exists but filter did NOT apply to it
+    assert "metadata.data_release" in df.columns
+
+
+@patch("requests.get")
+def test_fetch_data_json_filters_by_data_release(mock_get, gen3_metadata_parser, fake_api_key):
+    """fetch_data_json with data_release filters the returned dict."""
+    fake_response = {"data": [
+        {"id": 1, "data_release": "v1"},
+        {"id": 2, "data_release": "v2"},
+        {"id": 3, "data_release": "v1"},
+    ]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    with patch("builtins.open", mock_open(read_data=json.dumps(fake_api_key))):
+        result = gen3_metadata_parser.fetch_data_json(
+            "prog", "proj", "subject", data_release="v1"
+        )
+
+    assert result == {"data": [
+        {"id": 1, "data_release": "v1"},
+        {"id": 3, "data_release": "v1"},
+    ]}
+
+
+@patch("requests.get")
+def test_fetch_data_stores_filtered_in_data_store(mock_get, gen3_metadata_parser, fake_api_key):
+    """Gen3MetadataParser.fetch_data stores the filtered data, not the raw."""
+    fake_response = {"data": [
+        {"id": 1, "data_release": "v1"},
+        {"id": 2, "data_release": "v2"},
+    ]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    with patch("builtins.open", mock_open(read_data=json.dumps(fake_api_key))):
+        gen3_metadata_parser.fetch_data(
+            "prog", "proj", "subject", data_release="v1"
+        )
+
+    key = "prog/proj/subject"
+    assert gen3_metadata_parser.data_store[key] == {"data": [
+        {"id": 1, "data_release": "v1"},
+    ]}
 
 
 @patch("requests.get")

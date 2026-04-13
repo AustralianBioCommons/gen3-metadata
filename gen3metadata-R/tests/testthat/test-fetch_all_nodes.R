@@ -134,3 +134,189 @@ test_that("fetch_all_metadata skips failed nodes gracefully", {
 test_that("fetch_all_metadata errors when key file does not exist", {
     expect_error(fetch_all_metadata("nonexistent_file.json", "p", "c"), "Key file not found")
 })
+
+
+# ----------------------------------------------------------------------------
+# data_release filter tests
+# ----------------------------------------------------------------------------
+
+test_that("fetch_all_metadata filters by specific data_release", {
+
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+
+    mock_get_node_order <- function(key_file) c("subject")
+    original_get_node_order <- gen3metadata::get_node_order
+    assignInNamespace("get_node_order", mock_get_node_order, ns = "gen3metadata")
+
+    mock_post <- stub_request("post", uri = "https://data.test.biocommons.org.au/user/credentials/cdis/access_token")
+    mock_post <- to_return(mock_post,
+                           body = "{\"access_token\": \"fake_access_token\"}",
+                           status = 200,
+                           headers = list("Content-Type" = "application/json"))
+
+    mock_get_subject <- stub_request("get", uri = "https://data.test.biocommons.org.au/api/v0/submission/program1/AusDiab/export/?node_label=subject&format=json")
+    mock_get_subject <- to_return(
+        mock_get_subject,
+        body = paste0(
+            "{\"data\": [",
+            "{\"id\": 1, \"data_release\": \"v1\"},",
+            "{\"id\": 2, \"data_release\": \"v2\"},",
+            "{\"id\": 3, \"data_release\": \"v1\"}",
+            "]}"
+        ),
+        status = 200,
+        headers = list("Content-Type" = "application/json")
+    )
+
+    result <- suppressMessages(
+        fetch_all_metadata(tmp_key_file, "program1", "AusDiab", data_release = "v1")
+    )
+
+    # Nested list view: two records, both v1
+    expect_equal(length(result$subject), 2)
+    expect_equal(result$subject[[1]]$data_release, "v1")
+    expect_equal(result$subject[[2]]$data_release, "v1")
+    expect_equal(result$subject[[1]]$id, 1)
+    expect_equal(result$subject[[2]]$id, 3)
+
+    # data.frame view: aligned with nested list
+    dfs <- to_df(result)
+    expect_s3_class(dfs$subject, "data.frame")
+    expect_equal(nrow(dfs$subject), 2)
+    expect_equal(dfs$subject$id, c(1, 3))
+    expect_equal(dfs$subject$data_release, c("v1", "v1"))
+
+    assignInNamespace("get_node_order", original_get_node_order, ns = "gen3metadata")
+    unlink(tmp_key_file)
+    webmockr::stub_registry_clear()
+})
+
+
+test_that("fetch_all_metadata selects latest data_release_date", {
+
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+
+    mock_get_node_order <- function(key_file) c("sample")
+    original_get_node_order <- gen3metadata::get_node_order
+    assignInNamespace("get_node_order", mock_get_node_order, ns = "gen3metadata")
+
+    mock_post <- stub_request("post", uri = "https://data.test.biocommons.org.au/user/credentials/cdis/access_token")
+    mock_post <- to_return(mock_post,
+                           body = "{\"access_token\": \"fake_access_token\"}",
+                           status = 200,
+                           headers = list("Content-Type" = "application/json"))
+
+    mock_get_sample <- stub_request("get", uri = "https://data.test.biocommons.org.au/api/v0/submission/program1/AusDiab/export/?node_label=sample&format=json")
+    mock_get_sample <- to_return(
+        mock_get_sample,
+        body = paste0(
+            "{\"data\": [",
+            "{\"id\": 10, \"data_release_date\": \"2024-01-15\"},",
+            "{\"id\": 11, \"data_release_date\": \"2024-06-01\"},",
+            "{\"id\": 12, \"data_release_date\": \"2023-12-01\"}",
+            "]}"
+        ),
+        status = 200,
+        headers = list("Content-Type" = "application/json")
+    )
+
+    expect_message(
+        result <- fetch_all_metadata(tmp_key_file, "program1", "AusDiab", data_release = "latest"),
+        "2024-06-01"
+    )
+
+    expect_equal(length(result$sample), 1)
+    expect_equal(result$sample[[1]]$id, 11)
+    expect_equal(result$sample[[1]]$data_release_date, "2024-06-01")
+
+    dfs <- to_df(result)
+    expect_equal(nrow(dfs$sample), 1)
+    expect_equal(dfs$sample$id, 11)
+
+    assignInNamespace("get_node_order", original_get_node_order, ns = "gen3metadata")
+    unlink(tmp_key_file)
+    webmockr::stub_registry_clear()
+})
+
+
+test_that("fetch_all_metadata passes through nodes without release columns", {
+
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+
+    mock_get_node_order <- function(key_file) c("demographic")
+    original_get_node_order <- gen3metadata::get_node_order
+    assignInNamespace("get_node_order", mock_get_node_order, ns = "gen3metadata")
+
+    mock_post <- stub_request("post", uri = "https://data.test.biocommons.org.au/user/credentials/cdis/access_token")
+    mock_post <- to_return(mock_post,
+                           body = "{\"access_token\": \"fake_access_token\"}",
+                           status = 200,
+                           headers = list("Content-Type" = "application/json"))
+
+    mock_get_demo <- stub_request("get", uri = "https://data.test.biocommons.org.au/api/v0/submission/program1/AusDiab/export/?node_label=demographic&format=json")
+    mock_get_demo <- to_return(
+        mock_get_demo,
+        body = "{\"data\": [{\"id\": 20, \"age\": 30}, {\"id\": 21, \"age\": 40}]}",
+        status = 200,
+        headers = list("Content-Type" = "application/json")
+    )
+
+    # Filter value "v1" but node has no release fields → pass through + message
+    expect_message(
+        result <- fetch_all_metadata(tmp_key_file, "program1", "AusDiab", data_release = "v1"),
+        "demographic"
+    )
+
+    expect_equal(length(result$demographic), 2)
+    expect_equal(nrow(to_df(result)$demographic), 2)
+
+    assignInNamespace("get_node_order", original_get_node_order, ns = "gen3metadata")
+    unlink(tmp_key_file)
+    webmockr::stub_registry_clear()
+})
+
+
+test_that("fetch_all_metadata json and data.frame stay aligned after filter", {
+
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+
+    mock_get_node_order <- function(key_file) c("subject")
+    original_get_node_order <- gen3metadata::get_node_order
+    assignInNamespace("get_node_order", mock_get_node_order, ns = "gen3metadata")
+
+    mock_post <- stub_request("post", uri = "https://data.test.biocommons.org.au/user/credentials/cdis/access_token")
+    mock_post <- to_return(mock_post,
+                           body = "{\"access_token\": \"fake_access_token\"}",
+                           status = 200,
+                           headers = list("Content-Type" = "application/json"))
+
+    mock_get_subject <- stub_request("get", uri = "https://data.test.biocommons.org.au/api/v0/submission/program1/AusDiab/export/?node_label=subject&format=json")
+    mock_get_subject <- to_return(
+        mock_get_subject,
+        body = paste0(
+            "{\"data\": [",
+            "{\"id\": 1, \"data_release\": \"v1\"},",
+            "{\"id\": 2, \"data_release\": \"v2\"},",
+            "{\"id\": 3, \"data_release\": \"v1\"},",
+            "{\"id\": 4, \"data_release\": \"v2\"}",
+            "]}"
+        ),
+        status = 200,
+        headers = list("Content-Type" = "application/json")
+    )
+
+    result <- suppressMessages(
+        fetch_all_metadata(tmp_key_file, "program1", "AusDiab", data_release = "v2")
+    )
+
+    expect_equal(length(result$subject), nrow(to_df(result)$subject))
+    expect_equal(to_df(result)$subject$id, c(2, 4))
+
+    assignInNamespace("get_node_order", original_get_node_order, ns = "gen3metadata")
+    unlink(tmp_key_file)
+    webmockr::stub_registry_clear()
+})
