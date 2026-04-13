@@ -117,10 +117,10 @@ devtools::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3met
 The package depends on several other packages, which should be installed automatically. If not:
 
 ``` r
-install.packages(c("httr", "jsonlite", "jose", "glue", "reticulate"))
+install.packages(c("httr", "jsonlite", "jose", "glue"))
 ```
 
-The `get_node_order` and `fetch_all_metadata` functions require the Python `gen3_metadata` package to be installed (they use `reticulate` to call Python under the hood).
+As of v1.3.0 the R package is fully standalone — no Python interpreter, no `reticulate`, and no Python `gen3_metadata` package required. `devtools::install_github(...)` is all you need, which makes containerized RStudio deployments significantly simpler.
 
 ``` r
 library("gen3metadata")
