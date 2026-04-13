@@ -1,7 +1,7 @@
 Package: gen3metadata
 Type: Package
 Title: Gen3 metadata tools
-Version: 0.1.0
+Version: 0.2.0
 Author: Corey Giles [aut, cre]
 Authors@R: c(person("Corey", "Giles", role = c("aut", "cre"),
                     email = "Corey.Giles@Baker.edu.au",
