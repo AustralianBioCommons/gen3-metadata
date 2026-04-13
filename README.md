@@ -107,20 +107,46 @@ pytest -vv tests/
 
 ## R
 
+As of **v1.3.0** the R package is fully standalone — no Python interpreter, no `reticulate`, and no Python `gen3_metadata` package required. A single `devtools::install_github(...)` is all you need, which makes containerized RStudio deployments significantly simpler.
+
 ### Installation
+
+Always-latest from `main`:
 
 ``` r
 if (!require("devtools")) install.packages("devtools")
 devtools::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R")
 ```
 
-The package depends on several other packages, which should be installed automatically. If not:
+Pinned to a specific release (recommended for reproducible environments such as Docker images):
 
 ``` r
-install.packages(c("httr", "jsonlite", "jose", "glue", "reticulate"))
+if (!require("devtools")) install.packages("devtools")
+devtools::install_github(
+    "AustralianBioCommons/gen3-metadata",
+    subdir = "gen3metadata-R",
+    ref    = "v1.3.0"
+)
 ```
 
-The `get_node_order` and `fetch_all_metadata` functions require the Python `gen3_metadata` package to be installed (they use `reticulate` to call Python under the hood).
+CRAN dependencies are installed automatically with the package. If your environment requires installing them manually:
+
+``` r
+install.packages(c("httr", "jsonlite", "jose", "glue"))
+```
+
+#### In a Dockerfile (RStudio container)
+
+Add a single layer to your image:
+
+``` dockerfile
+RUN R -e 'if (!require("devtools")) install.packages("devtools", repos="https://cloud.r-project.org"); \
+          devtools::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R", ref = "v1.3.0")'
+```
+
+No Python or `pip` step is required.
+
+### Loading
 
 ``` r
 library("gen3metadata")
