@@ -19,7 +19,7 @@
 #'   they are referenced as link targets by other nodes (matching the
 #'   behavior of the original Python implementation).
 #'
-#' @importFrom httr GET http_error content status_code
+#' @importFrom httr GET http_error content status_code timeout
 #' @importFrom jsonlite fromJSON
 #' @export
 get_node_order <- function(key_file) {
@@ -37,7 +37,7 @@ get_node_order <- function(key_file) {
 
     # Fetch the full data dictionary. No auth header required.
     url <- paste0(base_url, "/api/v0/submission/_dictionary/_all")
-    res <- httr::GET(url)
+    res <- httr::GET(url, httr::timeout(.DEFAULT_TIMEOUT))
     if (httr::http_error(res)) {
         stop(sprintf(
             "Failed to fetch Gen3 data dictionary: HTTP %s",

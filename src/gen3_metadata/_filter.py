@@ -10,7 +10,7 @@ unit-tested without any Gen3/HTTP machinery.
 import logging
 from datetime import datetime
 
-logger = logging.getLogger("gen3_metadata")
+logger = logging.getLogger(__name__)
 
 
 LATEST_SENTINEL = "latest"

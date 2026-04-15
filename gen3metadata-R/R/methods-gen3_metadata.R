@@ -9,10 +9,10 @@
 #' 
 #' @method authenticate gen3_metadata
 #' @rdname authenticate
-#' @importFrom httr POST http_error content add_headers
+#' @importFrom httr POST http_error content add_headers timeout
 #' @export
 authenticate.gen3_metadata <- function(gen3_metadata) {
-    
+
     # Check that the credentials are provided
     if (is.null(gen3_metadata$credentials) || gen3_metadata$credentials$api_key == "") {
         stop("Credentials must be provided to authenticate gen3_metadata.")
@@ -22,7 +22,8 @@ authenticate.gen3_metadata <- function(gen3_metadata) {
     res <- httr::POST(
         url    = paste0(gen3_metadata$base_url, "/user/credentials/cdis/access_token"),
         body   = gen3_metadata$credentials,
-        encode = "json"
+        encode = "json",
+        httr::timeout(.DEFAULT_TIMEOUT)
     )
     
     # Check for errors in the response
@@ -72,7 +73,7 @@ authenticate.gen3_metadata <- function(gen3_metadata) {
 #' @method fetch_data gen3_metadata
 #' @rdname fetch_data
 #' @importFrom glue glue
-#' @importFrom httr GET http_error content
+#' @importFrom httr GET http_error content timeout
 #' @importFrom jsonlite fromJSON
 #' @export
 fetch_data.gen3_metadata <- function(gen3_metadata,
@@ -97,7 +98,8 @@ fetch_data.gen3_metadata <- function(gen3_metadata,
     res <- httr::GET(
         url,
         gen3_metadata$headers,
-        query = list(node_label = node_label, format = "json")
+        query = list(node_label = node_label, format = "json"),
+        httr::timeout(.DEFAULT_TIMEOUT)
     )
 
     # Check for errors in the response
