@@ -5,6 +5,7 @@ import jwt
 import re
 import logging
 import types
+from urllib.parse import urlparse
 
 from gen3.auth import Gen3Auth
 from gen3.submission import Gen3Submission
@@ -12,8 +13,43 @@ from gen3_validator.dict import DataDictionary
 
 from gen3_metadata._filter import filter_records_by_data_release
 
+_DEFAULT_REQUEST_TIMEOUT = 30  # seconds
 
-def get_node_order(key_file=None, sub=None):
+
+def _friendly_host(url):
+    """Return netloc from a URL, or the original string if parsing fails."""
+    try:
+        return urlparse(url or "").netloc or (url or "")
+    except Exception:
+        return url or ""
+
+
+def _resolve_endpoint(key_file=None, sub=None):
+    """Derive the Gen3 base URL from either a credentials file or a submission object."""
+    if sub is not None:
+        endpoint = getattr(sub, "_endpoint", None)
+        if endpoint:
+            return endpoint
+    if key_file is not None:
+        return Gen3Auth(refresh_file=key_file).endpoint
+    raise ValueError("Either key_file or sub must be provided.")
+
+
+def _fetch_gen3_dictionary(endpoint, timeout=_DEFAULT_REQUEST_TIMEOUT):
+    """Fetch the public ``/api/v0/submission/_dictionary/_all`` endpoint.
+
+    Bypasses ``Gen3Submission.get_dictionary_all()``, which calls
+    ``requests.get(url).text`` with no timeout and hangs for ~60s on a DNS
+    or network failure. We own this call so we can enforce a timeout and
+    let a ``requests.ConnectionError`` bubble up cleanly.
+    """
+    url = f"{endpoint.rstrip('/')}/api/v0/submission/_dictionary/_all"
+    response = requests.get(url, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def get_node_order(key_file=None, sub=None, timeout=_DEFAULT_REQUEST_TIMEOUT):
     """
     Returns a topologically sorted list of node names from a Gen3 data dictionary.
 
@@ -21,18 +57,15 @@ def get_node_order(key_file=None, sub=None):
         key_file (str, optional): Path to the Gen3 credentials JSON file.
             Required if `sub` is not provided.
         sub (Gen3Submission, optional): An existing Gen3Submission instance
-            to reuse (avoids re-authenticating).
+            to reuse (only its endpoint is read).
+        timeout (int): Request timeout in seconds for the dictionary fetch.
+            Defaults to 30.
 
     Returns:
         list: Node names in dependency order (parents before children).
     """
-    if sub is None:
-        if key_file is None:
-            raise ValueError("Either key_file or sub must be provided.")
-        auth = Gen3Auth(refresh_file=key_file)
-        sub = Gen3Submission(auth)
-
-    gen3dd = sub.get_dictionary_all()
+    endpoint = _resolve_endpoint(key_file=key_file, sub=sub)
+    gen3dd = _fetch_gen3_dictionary(endpoint, timeout=timeout)
 
     dd = DataDictionary(schema_path='')
     dd.schema = gen3dd
@@ -101,23 +134,45 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
             - result.<node_name> returns the raw JSON dict.
             - result.to_df().<node_name> returns a pandas DataFrame.
     """
-    logger = logging.getLogger("gen3_metadata")
+    logger = logging.getLogger(__name__)
 
     def log(msg):
         logger.info(msg)
         if verbose:
-            print(msg)
+            print(msg, flush=True)
 
     log(f"fetch_all_metadata: starting for {program_name}/{project_code}")
 
     # Single authentication context for the whole operation
-    auth = Gen3Auth(refresh_file=key_file)
-    sub = Gen3Submission(auth)
-    api_url = auth.endpoint
+    try:
+        auth = Gen3Auth(refresh_file=key_file)
+        sub = Gen3Submission(auth)
+        api_url = auth.endpoint
+    except requests.exceptions.RequestException as e:
+        host = _friendly_host(getattr(getattr(e, "request", None), "url", "") or "")
+        logger.error(f"fetch_all_metadata: authentication failed ({host}): {e}")
+        raise RuntimeError(
+            f"Could not authenticate with Gen3 at {host or 'unknown host'}. "
+            f"Check your credentials and network connectivity. Underlying error: {e}"
+        ) from e
+    except Exception as e:
+        logger.error(f"fetch_all_metadata: authentication failed: {e}")
+        raise RuntimeError(
+            f"Could not authenticate with Gen3. Check your credentials file "
+            f"({key_file}) and network connectivity. Underlying error: {e}"
+        ) from e
 
     # Get data dictionary and compute topological node order (reusing auth)
-    log("fetch_all_metadata: fetching data dictionary...")
-    nodes = get_node_order(sub=sub)
+    log(f"fetch_all_metadata: fetching data dictionary from {_friendly_host(api_url)}...")
+    try:
+        nodes = get_node_order(sub=sub)
+    except requests.exceptions.RequestException as e:
+        host = _friendly_host(api_url)
+        logger.error(f"fetch_all_metadata: data dictionary fetch failed ({host}): {e}")
+        raise RuntimeError(
+            f"Could not reach {host} to fetch the Gen3 data dictionary. "
+            f"Check VPN / network connectivity. Underlying error: {e}"
+        ) from e
     total = len(nodes)
     log(f"fetch_all_metadata: {total} nodes to fetch")
 
@@ -133,7 +188,7 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
             f"export/?node_label={node_name}&format=json"
         )
         try:
-            response = requests.get(url, auth=auth)
+            response = requests.get(url, auth=auth, timeout=_DEFAULT_REQUEST_TIMEOUT)
             response.raise_for_status()
             json_data = response.json()
 
@@ -158,11 +213,15 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
         except requests.exceptions.HTTPError as e:
             status = getattr(e.response, "status_code", "?")
             log(f"  [{i}/{total}] {node_name}: FAILED (HTTP {status})")
-            logger.warning(f"fetch_all_metadata: {node_name} → HTTP {status}")
+            logger.warning(f"fetch_all_metadata: {node_name} -> HTTP {status}")
+            failed.append(node_name)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            log(f"  [{i}/{total}] {node_name}: FAILED (network: {type(e).__name__})")
+            logger.warning(f"fetch_all_metadata: {node_name} -> network error: {e}")
             failed.append(node_name)
         except Exception as e:
             log(f"  [{i}/{total}] {node_name}: FAILED ({e})")
-            logger.warning(f"fetch_all_metadata: {node_name} → {e}")
+            logger.warning(f"fetch_all_metadata: {node_name} -> {e}")
             failed.append(node_name)
 
     log(f"fetch_all_metadata: done — {len(succeeded)}/{total} succeeded, {len(failed)} failed")
@@ -189,7 +248,7 @@ class Gen3MetadataParser:
         self.headers = {}
         self.data_store = {}
         if logger is None:
-            self.logger = logging.getLogger("gen3_metadata")
+            self.logger = logging.getLogger(__name__)
         else:
             self.logger = logger
         self.logger.info(f"Initialized Gen3MetadataParser with key file: {key_file_path}")

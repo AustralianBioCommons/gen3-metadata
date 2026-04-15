@@ -61,6 +61,31 @@ Nodes that have neither a `data_release` nor a `data_release_date` field (for ex
 
 The same `data_release` argument is also available on `Gen3MetadataParser.fetch_data` and `fetch_data_json` for single-node fetches.
 
+### Logging and error handling
+
+`fetch_all_metadata` prints per-node progress to stdout by default (`verbose=True`). If you want richer diagnostic output — filter decisions, authentication steps, `debug` messages — call `configure_logging()` once in your REPL or notebook to attach a stderr handler to the `gen3_metadata` logger:
+
+```python
+import logging
+import gen3_metadata
+
+gen3_metadata.configure_logging()              # INFO by default
+# gen3_metadata.configure_logging(logging.DEBUG)  # or more verbose
+```
+
+Each module logs under its own `gen3_metadata.<module>` name, so you can filter with standard `logging` machinery.
+
+Network calls inside `fetch_all_metadata` are timeout-guarded (30s per request) and wrapped with friendly error messages. A VPN/connectivity failure produces a clean one-liner instead of a urllib3 traceback:
+
+```
+fetch_all_metadata: starting for program1/CDAH
+fetch_all_metadata: fetching data dictionary from cad.staging.biocommons.org.au...
+RuntimeError: Could not reach cad.staging.biocommons.org.au to fetch the Gen3
+data dictionary. Check VPN / network connectivity. Underlying error: ...
+```
+
+Individual nodes that time out or return an HTTP error during the fetch loop are logged and skipped; the overall call completes with a final summary of which nodes succeeded and which failed.
+
 ### List nodes
 
 `get_node_order` returns a topologically sorted list of node names from the data dictionary (parents before children).
@@ -125,7 +150,7 @@ if (!require("devtools")) install.packages("devtools")
 devtools::install_github(
     "AustralianBioCommons/gen3-metadata",
     subdir = "gen3metadata-R",
-    ref    = "v1.3.0"
+    ref    = "v1.4.0"
 )
 ```
 
@@ -141,7 +166,7 @@ Add a single layer to your image:
 
 ``` dockerfile
 RUN R -e 'if (!require("devtools")) install.packages("devtools", repos="https://cloud.r-project.org"); \
-          devtools::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R", ref = "v1.3.0")'
+          devtools::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R", ref = "v1.4.0")'
 ```
 
 No Python or `pip` step is required.
@@ -209,6 +234,22 @@ Behavior per node:
 Nodes that have neither a `data_release` nor a `data_release_date` field are passed through unchanged with a message. Unparseable ISO dates in `"latest"` mode are skipped with a warning.
 
 The same `data_release` argument is also available on `fetch_data()` for single-node fetches.
+
+### Progress messages and error handling
+
+`fetch_all_metadata` emits per-node progress via `message()` (visible in interactive sessions and captured by knitr/RMarkdown by default). A DNS/VPN failure produces a clean `stop()` error rather than an `httr` traceback, e.g.:
+
+```
+fetch_all_metadata: starting for program1/AusDiab
+fetch_all_metadata: fetching data dictionary...
+Error: Could not fetch Gen3 data dictionary. Check VPN / network connectivity. Underlying error: ...
+```
+
+All network calls (authentication, dictionary fetch, per-node fetch) have a 30-second timeout, so a flaky network surfaces quickly instead of hanging indefinitely. To silence the progress output:
+
+``` r
+result <- suppressMessages(fetch_all_metadata(...))
+```
 
 ### List nodes
 

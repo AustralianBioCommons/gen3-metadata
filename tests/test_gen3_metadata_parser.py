@@ -198,8 +198,11 @@ def test_fetch_data_json(mock_get, gen3_metadata_parser, fake_api_key):
 
 @pytest.fixture
 def mock_gen3_dictionary():
-    """A mock Gen3 data dictionary with subject, sample, and demographic nodes."""
-    return {
+    """Yields a mock Gen3 data dictionary, with `_fetch_gen3_dictionary` patched
+    to return it so tests that exercise `get_node_order` / `fetch_all_metadata`
+    don't need to mock the HTTP layer themselves.
+    """
+    dictionary = {
         "subject": {
             "id": "subject",
             "category": "administrative",
@@ -234,6 +237,11 @@ def mock_gen3_dictionary():
             ]
         }
     }
+    with patch(
+        "gen3_metadata.gen3_metadata_parser._fetch_gen3_dictionary",
+        return_value=dictionary,
+    ):
+        yield dictionary
 
 
 @patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")

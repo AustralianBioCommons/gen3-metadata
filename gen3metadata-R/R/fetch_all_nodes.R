@@ -26,7 +26,7 @@
 #' @return A metadata_collection object. Access nodes via \code{result$subject}.
 #'   Call \code{to_df(result)} to get data.frames instead.
 #'
-#' @importFrom httr GET http_error content status_code
+#' @importFrom httr GET http_error content status_code timeout
 #' @importFrom jsonlite fromJSON
 #' @importFrom glue glue
 #' @export
@@ -37,19 +37,47 @@ fetch_all_metadata <- function(key_file, program_name, project_code, data_releas
         stop("Key file not found: ", key_file)
     }
 
-    # Get node order
-    nodes <- get_node_order(key_file)
+    message(sprintf("fetch_all_metadata: starting for %s/%s", program_name, project_code))
 
-    # Create and authenticate parser
+    # Get node order (fetches the public data dictionary). Wrap so a DNS /
+    # connectivity failure produces a readable error instead of an httr
+    # traceback.
+    message("fetch_all_metadata: fetching data dictionary...")
+    nodes <- tryCatch({
+        get_node_order(key_file)
+    }, error = function(e) {
+        stop(sprintf(
+            "Could not fetch Gen3 data dictionary. Check VPN / network connectivity. Underlying error: %s",
+            conditionMessage(e)
+        ), call. = FALSE)
+    })
+    total <- length(nodes)
+    message(sprintf("fetch_all_metadata: %d nodes to fetch", total))
+
+    # Create and authenticate parser. Wrap the auth POST too so offline runs
+    # surface a clean error instead of an httr stack.
     gen3 <- Gen3MetadataParser(key_file)
-    gen3 <- authenticate(gen3)
+    gen3 <- tryCatch({
+        authenticate(gen3)
+    }, error = function(e) {
+        stop(sprintf(
+            "Could not authenticate with Gen3 at %s. Check credentials and network connectivity. Underlying error: %s",
+            gen3$base_url %||% "unknown host",
+            conditionMessage(e)
+        ), call. = FALSE)
+    })
 
     # Initialize result lists
     json_results <- list()
     pd_results <- list()
+    succeeded <- character(0)
+    failed <- character(0)
 
     # Loop through nodes and fetch data
-    for (node_name in nodes) {
+    for (i in seq_along(nodes)) {
+        node_name <- nodes[i]
+        message(sprintf("  [%d/%d] fetching '%s'...", i, total, node_name))
+
         result <- tryCatch({
             url <- glue::glue(
                 "{gen3$base_url}/api/v0/submission",
@@ -59,12 +87,15 @@ fetch_all_metadata <- function(key_file, program_name, project_code, data_releas
             res <- httr::GET(
                 url,
                 gen3$headers,
-                query = list(node_label = node_name, format = "json")
+                query = list(node_label = node_name, format = "json"),
+                httr::timeout(.DEFAULT_TIMEOUT)
             )
 
             if (httr::http_error(res)) {
-                warning(sprintf("Skipping node '%s': HTTP %s",
-                                node_name, httr::status_code(res)))
+                status <- httr::status_code(res)
+                message(sprintf("  [%d/%d] %s: FAILED (HTTP %s)",
+                                i, total, node_name, status))
+                warning(sprintf("Skipping node '%s': HTTP %s", node_name, status))
                 NULL
             } else {
                 content_text <- httr::content(res, as = "text", encoding = "UTF-8")
@@ -76,6 +107,10 @@ fetch_all_metadata <- function(key_file, program_name, project_code, data_releas
                     data_release = data_release,
                     node_name    = node_name
                 )
+
+                record_count <- length(filtered$records)
+                message(sprintf("  [%d/%d] %s: OK (%d records)",
+                                i, total, node_name, record_count))
 
                 if (is.data.frame(parsed_pd) && length(filtered$keep_idx) > 0) {
                     pd_filtered <- parsed_pd[filtered$keep_idx, , drop = FALSE]
@@ -92,6 +127,8 @@ fetch_all_metadata <- function(key_file, program_name, project_code, data_releas
                 )
             }
         }, error = function(e) {
+            message(sprintf("  [%d/%d] %s: FAILED (%s)",
+                            i, total, node_name, conditionMessage(e)))
             warning(sprintf("Skipping node '%s': %s", node_name, conditionMessage(e)))
             NULL
         })
@@ -99,7 +136,17 @@ fetch_all_metadata <- function(key_file, program_name, project_code, data_releas
         if (!is.null(result)) {
             json_results[[node_name]] <- result$json
             pd_results[[node_name]] <- result$pd
+            succeeded <- c(succeeded, node_name)
+        } else {
+            failed <- c(failed, node_name)
         }
+    }
+
+    message(sprintf("fetch_all_metadata: done -- %d/%d succeeded, %d failed",
+                    length(succeeded), total, length(failed)))
+    if (length(failed) > 0) {
+        message(sprintf("fetch_all_metadata: failed nodes: %s",
+                        paste(failed, collapse = ", ")))
     }
 
     obj <- json_results
@@ -107,6 +154,13 @@ fetch_all_metadata <- function(key_file, program_name, project_code, data_releas
     class(obj) <- "metadata_collection"
     return(obj)
 }
+
+# Default HTTP request timeout, seconds. Used by every httr::GET / httr::POST
+# in this package to prevent indefinite hangs on network failure.
+.DEFAULT_TIMEOUT <- 30
+
+# Null-coalesce operator for use inside stop() messages.
+`%||%` <- function(a, b) if (is.null(a) || identical(a, "")) b else a
 
 
 #' Convert metadata collection to data.frames
