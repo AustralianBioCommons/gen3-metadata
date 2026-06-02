@@ -14,56 +14,27 @@ on:
       - 'bugfix-*'
 
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Install Poetry
+        run: pipx install poetry
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: 3.9
+          cache: poetry
 
       - name: Install dependencies
-        run: |
-          python -m venv venv
-          source venv/bin/activate
-          pip install -r requirements.txt
+        run: poetry install
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
-        with:
-          path: venv
-          key: ${{ runner.os }}-venv-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-venv-
-  test:
-    needs: build  # Ensures tests run only after a successful build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.9
-
-      - name: Restore cached dependencies
-        uses: actions/cache@v3
-        with:
-          path: venv
-          key: ${{ runner.os }}-venv-${{ hashFiles('requirements.txt') }}
-
-      - name: Activate virtual environment and install dependencies
-        run: |
-          source venv/bin/activate
-          pip install -e .
+      - name: Build package
+        run: poetry build
 
       - name: Run tests
-        run: |
-          source venv/bin/activate
-          pytest tests/
+        run: poetry run python -m pytest tests/
