@@ -132,25 +132,25 @@ pytest -vv tests/
 
 ## R
 
-As of **v1.3.0** the R package is fully standalone — no Python interpreter, no `reticulate`, and no Python `gen3_metadata` package required. A single `devtools::install_github(...)` is all you need, which makes containerized RStudio deployments significantly simpler.
+As of **v1.3.0** the R package is fully standalone — no Python interpreter, no `reticulate`, and no Python `gen3_metadata` package required. A single `remotes::install_github(...)` is all you need, which makes containerized RStudio deployments significantly simpler.
 
 ### Installation
 
 Always-latest from `main`:
 
 ``` r
-if (!require("devtools")) install.packages("devtools")
-devtools::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R")
+if (!require("remotes")) install.packages("remotes")
+remotes::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R")
 ```
 
 Pinned to a specific release (recommended for reproducible environments such as Docker images):
 
 ``` r
-if (!require("devtools")) install.packages("devtools")
-devtools::install_github(
+if (!require("remotes")) install.packages("remotes")
+remotes::install_github(
     "AustralianBioCommons/gen3-metadata",
     subdir = "gen3metadata-R",
-    ref    = "v1.4.0"
+    ref    = "v1.4.2"
 )
 ```
 
@@ -165,8 +165,8 @@ install.packages(c("httr", "jsonlite", "jose", "glue"))
 Add a single layer to your image:
 
 ``` dockerfile
-RUN R -e 'if (!require("devtools")) install.packages("devtools", repos="https://cloud.r-project.org"); \
-          devtools::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R", ref = "v1.4.0")'
+RUN R -e 'if (!require("remotes")) install.packages("remotes", repos="https://cloud.r-project.org"); \
+          remotes::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R", ref = "v1.4.2")'
 ```
 
 No Python or `pip` step is required.

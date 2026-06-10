@@ -26,8 +26,8 @@ You can install the gen3metadata R tool from
 [GitHub](https://github.com/) with:
 
 ``` r
-if (!require("devtools")) install.packages("devtools")
-devtools::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R")
+if (!require("remotes")) install.packages("remotes")
+remotes::install_github("AustralianBioCommons/gen3-metadata", subdir = "gen3metadata-R")
 ```
 
 The package depends on several other packages, which should hopefully be installed automatically.
