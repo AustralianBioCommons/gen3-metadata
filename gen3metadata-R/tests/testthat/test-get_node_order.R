@@ -210,3 +210,32 @@ test_that("get_node_order handles links subgroup wrapper", {
     unlink(tmp_key_file)
     webmockr::stub_registry_clear()
 })
+
+test_that("get_node_order accepts a raw credentials JSON string", {
+
+    # Passing the credentials JSON directly (no file on disk). The guard in
+    # get_node_order must skip file.exists() for a raw string and produce
+    # exactly the same node order as the file-based call.
+    dict_body <- paste0(
+        "{",
+        "\"subject\": {\"id\": \"subject\", \"links\": [{\"target_type\": \"project\"}]},",
+        "\"sample\": {\"id\": \"sample\", \"links\": [{\"target_type\": \"subject\"}]}",
+        "}"
+    )
+
+    mock_get <- stub_request("get", uri = DICT_URL)
+    mock_get <- to_return(
+        mock_get,
+        body    = dict_body,
+        status  = 200,
+        headers = list("Content-Type" = "application/json")
+    )
+
+    result <- get_node_order(fake_api_key)
+
+    expect_true("subject" %in% result)
+    expect_true("sample" %in% result)
+    expect_true(which(result == "subject") < which(result == "sample"))
+
+    webmockr::stub_registry_clear()
+})

@@ -54,3 +54,23 @@ test_that("Gen3MetadataParser creates an object with correct class", {
 })
 
 
+test_that("Gen3MetadataParser accepts a raw credentials JSON string", {
+
+    # The raw credentials JSON (as pasted from the Gen3 portal) passed
+    # directly instead of a file path. The resulting object must be
+    # identical in behavior to one built from a file: same class, same
+    # credentials, same base URL derived from the JWT iss claim.
+    obj <- Gen3MetadataParser(fake_api_key)
+
+    expect_s3_class(obj, "gen3_metadata")
+    expect_equal(obj$base_url, "https://data.test.biocommons.org.au")
+
+    # Credentials must match what a file-based load of the same JSON yields
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+    file_obj <- Gen3MetadataParser(tmp_key_file)
+
+    expect_equal(obj$credentials, file_obj$credentials)
+
+    unlink(tmp_key_file)
+})

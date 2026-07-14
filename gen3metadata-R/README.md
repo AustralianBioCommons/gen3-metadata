@@ -46,6 +46,14 @@ library("gen3metadata")
 
 This is a basic example to authenticate and load some data.
 You will need a credential file (stored in `key_file_path` in this example).
+Alternatively, you can paste the credentials JSON exported from the Gen3
+portal directly as a string — both forms are auto-detected:
+
+``` r
+key_file_path <- "path/to/credentials.json"
+# or:
+key_file_path <- '{"api_key": "eyJhbGciOi...", "key_id": "1f84b84c-..."}'
+```
 
 ``` r
 # Create the Gen3 Metadata Parser object

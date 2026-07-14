@@ -2,16 +2,18 @@
 % Please edit documentation in R/load_key_file.R
 \name{load_key_file}
 \alias{load_key_file}
-\title{Load Gen3 credentials from key file}
+\title{Load Gen3 credentials from key file or raw JSON string}
 \usage{
 load_key_file(key_file)
 }
 \arguments{
-\item{key_file}{Character string path to the JSON key file}
+\item{key_file}{Character string: either a path to the JSON key file, or
+the raw credentials JSON string itself (auto-detected)}
 }
 \value{
 List containing 'api_key' and 'key_id' credentials
 }
 \description{
-This function reads a JSON key file containing Gen3 API credentials.
+This function reads Gen3 API credentials from a JSON key file, or parses
+them directly when given the raw credentials JSON string itself.
 }

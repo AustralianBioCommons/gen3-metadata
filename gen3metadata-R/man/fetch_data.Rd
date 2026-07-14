@@ -5,14 +5,15 @@
 \alias{fetch_data.gen3_metadata}
 \title{Fetch data from Gen3 API}
 \usage{
-fetch_data(gen3_metadata, program_name, project_code, node_label, api_version)
+fetch_data(gen3_metadata, program_name, project_code, node_label, ...)
 
 \method{fetch_data}{gen3_metadata}(
   gen3_metadata,
   program_name,
   project_code,
   node_label,
-  api_version = "v0"
+  api_version = "v0",
+  data_release = "latest"
 )
 }
 \arguments{
@@ -24,12 +25,19 @@ fetch_data(gen3_metadata, program_name, project_code, node_label, api_version)
 
 \item{node_label}{Character string label of the node to fetch data from}
 
+\item{...}{Additional method-specific arguments (e.g. \code{api_version},
+\code{data_release}).}
+
 \item{api_version}{Character string API version (default: "v0")}
+
+\item{data_release}{Filter for records by data release. See
+\code{\link{fetch_all_metadata}} for behavior. Defaults to
+\code{"latest"}. Pass \code{NULL} to disable filtering.}
 }
 \value{
-Data frame containing the fetched data
+A list containing the fetched data
 
-Data frame containing the fetched data from the specified node
+A list containing the fetched data from the specified node
 }
 \description{
 Generic function to fetch data from a specific node in the Gen3 submission API
@@ -37,4 +45,6 @@ for a given program and project.
 
 This method fetches data from a specific node in the Gen3 API
 for a given program and project. The object must be authenticated first.
+Returns the raw JSON data as a nested list. Users can convert to a
+data.frame themselves using e.g. \code{do.call(rbind, lapply(result, as.data.frame))}.
 }

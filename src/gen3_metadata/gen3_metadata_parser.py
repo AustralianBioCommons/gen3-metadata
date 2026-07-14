@@ -24,14 +24,36 @@ def _friendly_host(url):
         return url or ""
 
 
+def _is_raw_json_credentials(value):
+    """Return True if `value` is a raw credentials JSON string (starts with '{'
+    after leading whitespace) rather than a path to a credentials file."""
+    return isinstance(value, str) and value.lstrip().startswith("{")
+
+
+def _make_gen3_auth(key_file):
+    """Build a Gen3Auth from either a credentials file path or a raw JSON string.
+
+    A raw string is parsed with json.loads and passed as refresh_token=,
+    which Gen3Auth supports natively (it derives the endpoint from the
+    api_key JWT). A path is passed as refresh_file= (existing behavior).
+    """
+    if _is_raw_json_credentials(key_file):
+        creds = json.loads(key_file)
+        if "api_key" not in creds:
+            raise ValueError("Credentials JSON must contain an 'api_key' field.")
+        return Gen3Auth(refresh_token=creds)
+    return Gen3Auth(refresh_file=key_file)
+
+
 def _resolve_endpoint(key_file=None, sub=None):
-    """Derive the Gen3 base URL from either a credentials file or a submission object."""
+    """Derive the Gen3 base URL from either credentials (file path or raw JSON
+    string) or a submission object."""
     if sub is not None:
         endpoint = getattr(sub, "_endpoint", None)
         if endpoint:
             return endpoint
     if key_file is not None:
-        return Gen3Auth(refresh_file=key_file).endpoint
+        return _make_gen3_auth(key_file).endpoint
     raise ValueError("Either key_file or sub must be provided.")
 
 
@@ -54,7 +76,8 @@ def get_node_order(key_file=None, sub=None, timeout=_DEFAULT_REQUEST_TIMEOUT):
     Returns a topologically sorted list of node names from a Gen3 data dictionary.
 
     Args:
-        key_file (str, optional): Path to the Gen3 credentials JSON file.
+        key_file (str, optional): Path to the Gen3 credentials JSON file,
+            or the raw credentials JSON string itself (auto-detected).
             Required if `sub` is not provided.
         sub (Gen3Submission, optional): An existing Gen3Submission instance
             to reuse (only its endpoint is read).
@@ -112,7 +135,8 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
     avoiding double-authentication issues that can cause 403 errors.
 
     Args:
-        key_file (str): Path to the Gen3 credentials JSON file.
+        key_file (str): Path to the Gen3 credentials JSON file, or the raw
+            credentials JSON string itself (auto-detected).
         program_name (str): The name of the program.
         project_code (str): The code of the project.
         verbose (bool): Print progress to stdout. Defaults to True.
@@ -143,9 +167,12 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
 
     log(f"fetch_all_metadata: starting for {program_name}/{project_code}")
 
+    # Never interpolate raw credentials (a live JWT) into error messages
+    key_desc = "<inline credentials>" if _is_raw_json_credentials(key_file) else key_file
+
     # Single authentication context for the whole operation
     try:
-        auth = Gen3Auth(refresh_file=key_file)
+        auth = _make_gen3_auth(key_file)
         sub = Gen3Submission(auth)
         api_url = auth.endpoint
     except requests.exceptions.RequestException as e:
@@ -158,8 +185,8 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
     except Exception as e:
         logger.error(f"fetch_all_metadata: authentication failed: {e}")
         raise RuntimeError(
-            f"Could not authenticate with Gen3. Check your credentials file "
-            f"({key_file}) and network connectivity. Underlying error: {e}"
+            f"Could not authenticate with Gen3. Check your credentials "
+            f"({key_desc}) and network connectivity. Underlying error: {e}"
         ) from e
 
     # Get data dictionary and compute topological node order (reusing auth)
@@ -241,7 +268,8 @@ class Gen3MetadataParser:
         Initializes the Gen3MetadataParser with API URL and key file path.
 
         Args:
-            key_file_path (str): The file path to the JSON key file for authentication.
+            key_file_path (str): Path to the JSON key file for authentication,
+                or the raw credentials JSON string itself (auto-detected).
             logger (logging.Logger, optional): Logger instance to use. If None, uses default.
         """
         self.key_file_path = key_file_path
@@ -251,7 +279,8 @@ class Gen3MetadataParser:
             self.logger = logging.getLogger(__name__)
         else:
             self.logger = logger
-        self.logger.info(f"Initialized Gen3MetadataParser with key file: {key_file_path}")
+        key_desc = "<inline credentials>" if _is_raw_json_credentials(key_file_path) else key_file_path
+        self.logger.info(f"Initialized Gen3MetadataParser with key file: {key_desc}")
 
     def _add_quotes_to_json(self, input_str):
         try:
@@ -273,25 +302,27 @@ class Gen3MetadataParser:
 
     def _load_api_key(self) -> dict:
         """
-        Loads the API key from the specified JSON file.
+        Loads the API key from the JSON credentials file, or parses
+        `key_file_path` directly when it is a raw JSON string.
 
         Returns:
-            dict: The API key loaded from the JSON file.
+            dict: The API key credentials.
         """
         try:
-            self.logger.info(f"Loading API key from file: {self.key_file_path}")
-            # Read the file as plain text
-            with open(self.key_file_path, "r") as f:
-                content = f.read()
+            if _is_raw_json_credentials(self.key_file_path):
+                self.logger.info("Loading API key from inline credentials JSON string.")
+                content = self.key_file_path
+            else:
+                self.logger.info(f"Loading API key from file: {self.key_file_path}")
+                with open(self.key_file_path, "r") as f:
+                    content = f.read()
             # If the content does not contain any double or single quotes, try to fix it
             if '"' not in content and "'" not in content:
-                self.logger.warning("API key file appears to lack quotes, attempting to fix.")
+                self.logger.warning("API key content appears to lack quotes, attempting to fix.")
                 return self._add_quotes_to_json(content)
 
-            # Read the file as JSON
-            with open(self.key_file_path) as json_file:
-                self.logger.debug("Parsing API key file as JSON.")
-                return json.load(json_file)
+            self.logger.debug("Parsing API key content as JSON.")
+            return json.loads(content)
         except FileNotFoundError as fnf_err:
             self.logger.error(f"File not found: {fnf_err}")
             print(f"File not found: {fnf_err}")

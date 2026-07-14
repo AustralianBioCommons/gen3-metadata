@@ -7,12 +7,15 @@
 Gen3MetadataParser(key_file)
 }
 \arguments{
-\item{key_file}{Character string path to the JSON key file containing Gen3 credentials}
+\item{key_file}{Character string: either a path to the JSON key file
+containing Gen3 credentials, or the raw credentials JSON string itself
+(auto-detected)}
 }
 \value{
 A gen3_metadata object with credentials and base URL configured
 }
 \description{
 This function creates a new Gen3 metadata parser object by loading
-credentials from a key file. Use this object to interact with the Gen3 API.
+credentials from a key file or a raw credentials JSON string. Use this
+object to interact with the Gen3 API.
 }

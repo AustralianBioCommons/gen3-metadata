@@ -6,10 +6,11 @@
 #' Kahn's algorithm. Pure R — no Python dependency.
 #'
 #' The dictionary endpoint (\code{/api/v0/submission/_dictionary/_all})
-#' is unauthenticated, but the credentials JSON file is still required
+#' is unauthenticated, but the credentials JSON is still required
 #' to derive the base URL from the JWT \code{iss} claim.
 #'
-#' @param key_file Character string path to the Gen3 credentials JSON file
+#' @param key_file Character string: either a path to the Gen3 credentials
+#'   JSON file, or the raw credentials JSON string itself (auto-detected)
 #'
 #' @return A character vector of node names in topological order.
 #'   \code{core_metadata_collection}, if present, is forced to the end of
@@ -24,8 +25,8 @@
 #' @export
 get_node_order <- function(key_file) {
 
-    # Validate key file path
-    if (!file.exists(key_file)) {
+    # Validate key file path (skipped for a raw credentials JSON string)
+    if (!is_raw_json_credentials(key_file) && !file.exists(key_file)) {
         stop("Key file not found: ", key_file)
     }
 

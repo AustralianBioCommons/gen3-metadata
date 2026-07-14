@@ -5,7 +5,8 @@
 #' accessible via \code{$} (raw JSON as nested lists). Call \code{to_df()} on
 #' the result to get a similar object with data.frames.
 #'
-#' @param key_file Character string path to the Gen3 credentials JSON file
+#' @param key_file Character string: either a path to the Gen3 credentials
+#'   JSON file, or the raw credentials JSON string itself (auto-detected)
 #' @param program_name Character string name of the program
 #' @param project_code Character string code of the project
 #' @param data_release Filter for records by data release.
@@ -32,8 +33,8 @@
 #' @export
 fetch_all_metadata <- function(key_file, program_name, project_code, data_release = "latest") {
 
-    # Check that the key file exists
-    if (!file.exists(key_file)) {
+    # Check that the key file exists (skipped for a raw credentials JSON string)
+    if (!is_raw_json_credentials(key_file) && !file.exists(key_file)) {
         stop("Key file not found: ", key_file)
     }
 

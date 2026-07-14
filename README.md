@@ -3,7 +3,8 @@ User friendly tools for downloading and manipulating gen3 metadata.
 
 As a pre-req you need to save your gen3 api key to the workspace environment. This can be done either in the jupyter lab or R-studio bash terminal by running the following command:
 ```bash
-echo '<paste-gen3-api-key>' > credentials.txt
+echo '<paste-gen3-api-key>' > credentials.json
+```
 
 ## Python
 Run in python or a jupyter notebook.
@@ -31,6 +32,21 @@ result.demographic      # dict
 dfs = result.to_df()
 dfs.subject             # pandas DataFrame
 dfs.demographic         # pandas DataFrame
+```
+
+#### Credentials: file path or raw JSON string
+
+Everywhere a `key_file` is accepted (`fetch_all_metadata`, `get_node_order`, `Gen3MetadataParser`), you can pass either a path to your `credentials.json` or the credentials JSON pasted directly as a string — the two forms are auto-detected:
+
+**Important**: When passing the credentials as a string, make sure to wrap it in **single** quotes `'<apiKey>'` to avoid issues with special characters.
+
+```python
+# From a file
+result = fetch_all_metadata("path/to/credentials.json", "program1", "project1")
+
+# Or paste the credentials JSON exported from the Gen3 portal as a string
+api_key = '{"api_key": "eyJhbGciOi...", "key_id": "1f84b84c-..."}'
+result = fetch_all_metadata(api_key, "program1", "project1")
 ```
 
 ### Filtering by data release
@@ -95,7 +111,7 @@ Individual nodes that time out or return an HTTP error during the fetch loop are
 ```python
 from gen3_metadata.gen3_metadata_parser import get_node_order
 
-nodes = get_node_order("path/to/credentials.txt")
+nodes = get_node_order("path/to/credentials.json")
 # ['program', 'project', 'subject', 'sample', 'demographic', ...]
 ```
 
@@ -107,7 +123,7 @@ If you only need one node, use `Gen3MetadataParser` + `fetch_data_json`. It retu
 import pandas as pd
 from gen3_metadata.gen3_metadata_parser import Gen3MetadataParser
 
-key_file = "path/to/credentials.txt"
+key_file = "path/to/credentials.json"   # or the raw credentials JSON string
 parser = Gen3MetadataParser(key_file)
 parser.authenticate()
 
@@ -184,7 +200,7 @@ library("gen3metadata")
 `fetch_all_metadata` is the primary entry point. It walks the data dictionary in dependency order and fetches data for every node, returning a `metadata_collection` object where nodes are accessible via `$`. Call `to_df()` on it to get data.frames instead.
 
 ``` r
-result <- fetch_all_metadata("path/to/credentials.txt", "program1", "AusDiab")
+result <- fetch_all_metadata("path/to/credentials.json", "program1", "AusDiab")
 
 # Access each node as raw JSON (nested list)
 result$subject
@@ -196,32 +212,45 @@ dfs$subject         # data.frame
 dfs$demographic     # data.frame
 ```
 
+#### Credentials: file path or raw JSON string
+
+As in the Python package, everywhere a `key_file` is accepted (`fetch_all_metadata`, `get_node_order`, `Gen3MetadataParser`), you can pass either a path to your `credentials.json` or the credentials JSON pasted directly as a string — the two forms are auto-detected:
+
+``` r
+# From a file
+result <- fetch_all_metadata("path/to/credentials.json", "program1", "AusDiab")
+
+# Or paste the credentials JSON exported from the Gen3 portal as a string
+api_key <- '{"api_key": "eyJhbGciOi...", "key_id": "1f84b84c-..."}'
+result <- fetch_all_metadata(api_key, "program1", "AusDiab")
+```
+
 ### Filtering by data release
 
 `fetch_all_metadata` accepts a `data_release` argument that mirrors the Python API. The **default is `"latest"`** — each node is inspected for a `data_release_date` field and only records matching the max ISO date are kept. The selected version and date are emitted per node via `message()`.
 
 ``` r
 # Default: per node, keep records with the max data_release_date
-result <- fetch_all_metadata("path/to/credentials.txt", "program1", "AusDiab")
+result <- fetch_all_metadata("path/to/credentials.json", "program1", "AusDiab")
 # node 'subject': selected data_release_date=2024-06-01 data_release='v2.3' (123/22494 records)
 # node 'demographic': selected data_release_date=2024-06-01 data_release='v2.3' (123/22494 records)
 # ...
 
 # Pin to a specific release (exact, case-sensitive match on data_release field)
 result <- fetch_all_metadata(
-    "path/to/credentials.txt", "program1", "AusDiab",
+    "path/to/credentials.json", "program1", "AusDiab",
     data_release = "v2.3"
 )
 
 # Disable filtering — return every record, no filter messages
 result <- fetch_all_metadata(
-    "path/to/credentials.txt", "program1", "AusDiab",
+    "path/to/credentials.json", "program1", "AusDiab",
     data_release = NULL
 )
 
 # Suppress the per-node message output while keeping the filter active
 result <- suppressMessages(
-    fetch_all_metadata("path/to/credentials.txt", "program1", "AusDiab")
+    fetch_all_metadata("path/to/credentials.json", "program1", "AusDiab")
 )
 ```
 
@@ -258,7 +287,7 @@ result <- suppressMessages(fetch_all_metadata(...))
 `get_node_order` returns a topologically sorted character vector of node names from the data dictionary.
 
 ``` r
-nodes <- get_node_order("path/to/credentials.txt")
+nodes <- get_node_order("path/to/credentials.json")
 # [1] "program" "project" "subject" "sample" "demographic" ...
 ```
 
@@ -267,7 +296,7 @@ nodes <- get_node_order("path/to/credentials.txt")
 If you only need one node, use `Gen3MetadataParser` + `fetch_data`. It returns the raw JSON data as a nested list. Convert to a data.frame yourself if you need one.
 
 ``` r
-key_file_path <- "path/to/credentials.txt"
+key_file_path <- "path/to/credentials.json"   # or the raw credentials JSON string
 
 gen3 <- Gen3MetadataParser(key_file_path)
 gen3 <- authenticate(gen3)

@@ -852,3 +852,140 @@ def test_fetch_all_metadata_empty_data(mock_auth_class, mock_sub_class, mock_get
     assert result.subject == {"data": []}
     assert isinstance(result.to_df().subject, pd.DataFrame)
     assert result.to_df().subject.empty
+
+
+# ---------------------------------------------------------------------------
+# Raw credentials JSON string support
+# ---------------------------------------------------------------------------
+# Gen3 credentials are normally supplied as a path to a credentials.json file.
+# The same parameters also accept the raw credentials JSON string itself
+# (auto-detected by a leading "{"), so users can paste the key exported from
+# the Gen3 portal directly into a variable without saving it to disk.
+
+
+def test_load_api_key_from_raw_json_string(fake_api_key):
+    """
+    A parser constructed with the raw credentials JSON string (instead of a
+    file path) should parse it directly, without ever touching the
+    filesystem. This is the core of the paste-the-key-as-a-string feature:
+    if open() were called, the multi-KB JWT would be treated as a path and
+    fail with a confusing OS error.
+    """
+    parser = Gen3MetadataParser(key_file_path=json.dumps(fake_api_key))
+    opener = MagicMock()
+    with patch("builtins.open", opener):
+        result = parser._load_api_key()
+    assert result == fake_api_key
+    opener.assert_not_called()
+
+
+def test_load_api_key_from_raw_json_string_with_whitespace(fake_api_key):
+    """
+    A credentials blob copy-pasted from a terminal or the Gen3 portal often
+    carries leading/trailing newlines and indentation. Detection strips
+    leading whitespace before checking for "{", so the padded string must
+    parse identically to the clean one.
+    """
+    padded = "\n  " + json.dumps(fake_api_key) + "\n"
+    parser = Gen3MetadataParser(key_file_path=padded)
+    result = parser._load_api_key()
+    assert result == fake_api_key
+
+
+def test_load_api_key_raw_string_invalid_json():
+    """
+    A string starting with "{" is committed to the raw-JSON path, so invalid
+    JSON must surface as a JSON parse error (json.JSONDecodeError), not as a
+    "file not found" error from trying to open the string as a path. This
+    gives the user an actionable message about their pasted key.
+    """
+    parser = Gen3MetadataParser(key_file_path='{"api_key": "abc",,}')
+    with pytest.raises(json.JSONDecodeError):
+        parser._load_api_key()
+
+
+def test_load_api_key_file_path_unchanged(gen3_metadata_parser, fake_api_key):
+    """
+    Regression guard for the raw-string refactor of _load_api_key: input
+    that is a file path (does not start with "{") must still be read from
+    disk and parsed exactly as before.
+    """
+    with patch("builtins.open", mock_open(read_data=json.dumps(fake_api_key))) as opener:
+        result = gen3_metadata_parser._load_api_key()
+    assert result == fake_api_key
+    opener.assert_called_once_with("fake_credentials.json", "r")
+
+
+def test_init_and_load_do_not_log_raw_credentials(fake_api_key, caplog):
+    """
+    The raw string contains a live JWT (the api_key), so it must never be
+    written to logs. The constructor and _load_api_key both log an
+    "<inline credentials>" placeholder instead when given a raw string.
+    """
+    raw = json.dumps(fake_api_key)
+    with caplog.at_level(logging.DEBUG):
+        parser = Gen3MetadataParser(key_file_path=raw)
+        parser._load_api_key()
+    for record in caplog.records:
+        assert fake_api_key["api_key"] not in record.getMessage()
+
+
+def test_make_gen3_auth_missing_api_key():
+    """
+    A raw credentials string without an "api_key" field cannot authenticate
+    (Gen3Auth derives the endpoint from that JWT), so _make_gen3_auth should
+    fail fast with a clear ValueError instead of a downstream KeyError.
+    """
+    from gen3_metadata.gen3_metadata_parser import _make_gen3_auth
+    with pytest.raises(ValueError, match="api_key"):
+        _make_gen3_auth('{"key_id": "18bdaa-b018"}')
+
+
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_get_node_order_with_raw_json_string(mock_auth, mock_sub_class, mock_gen3_dictionary, fake_api_key):
+    """
+    get_node_order given a raw credentials JSON string must pass the parsed
+    dict to Gen3Auth as refresh_token= (the SDK's in-memory credentials
+    option), not as refresh_file= — a JWT blob used as a file path would
+    fail inside the SDK. Output must match the file-path behavior.
+    """
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    result = get_node_order(json.dumps(fake_api_key))
+
+    mock_auth.assert_called_once_with(refresh_token=fake_api_key)
+    assert result.index("subject") < result.index("sample")
+    assert result.index("subject") < result.index("demographic")
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_with_raw_json_string(mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, fake_api_key):
+    """
+    End-to-end (mocked) check that fetch_all_metadata accepts the raw
+    credentials JSON string: Gen3Auth must receive the parsed dict via
+    refresh_token=, and the result must be a normal MetadataCollection —
+    identical to what a file path produces.
+    """
+    mock_auth_instance = MagicMock()
+    mock_auth_instance.endpoint = "https://test.example.com"
+    mock_auth_class.return_value = mock_auth_instance
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    fake_response = {"data": [{"id": 1, "name": "test"}]}
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = fake_response
+    mock_get.return_value.raise_for_status.return_value = None
+
+    result = fetch_all_metadata(json.dumps(fake_api_key), "prog", "proj", verbose=False)
+
+    mock_auth_class.assert_called_once_with(refresh_token=fake_api_key)
+    assert isinstance(result, MetadataCollection)
+    assert result.subject == fake_response
