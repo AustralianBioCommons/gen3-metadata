@@ -58,7 +58,7 @@ test_that("fetch_all_metadata returns metadata_collection with to_df()", {
                                  status = 200,
                                  headers = list("Content-Type" = "application/json"))
 
-    result <- fetch_all_metadata(tmp_key_file, "program1", "AusDiab")
+    result <- suppressMessages(fetch_all_metadata(tmp_key_file, "program1", "AusDiab"))
 
     # Returns metadata_collection
     expect_s3_class(result, "metadata_collection")
@@ -84,7 +84,7 @@ test_that("fetch_all_metadata returns metadata_collection with to_df()", {
 })
 
 
-test_that("fetch_all_metadata skips failed nodes gracefully", {
+test_that("fetch_all_metadata treats HTTP errors as no data, without warnings", {
 
     tmp_key_file <- tempfile(fileext = ".json")
     writeLines(fake_api_key, tmp_key_file)
@@ -114,13 +114,17 @@ test_that("fetch_all_metadata skips failed nodes gracefully", {
                                  status = 400,
                                  headers = list("Content-Type" = "application/json"))
 
-    result <- suppressWarnings(fetch_all_metadata(tmp_key_file, "program1", "AusDiab"))
+    # An HTTP 400 on export (as Gen3 returns for administrative nodes) is a
+    # benign "no data" outcome and must NOT raise a warning any more.
+    expect_no_warning(
+        result <- suppressMessages(fetch_all_metadata(tmp_key_file, "program1", "AusDiab"))
+    )
 
     # Successful node present
     expect_true("subject" %in% names(result))
     expect_s3_class(to_df(result)$subject, "data.frame")
 
-    # Failed node absent
+    # HTTP-rejected node absent (unchanged result semantics)
     expect_false("sample" %in% names(result))
     expect_false("sample" %in% names(to_df(result)))
 
@@ -315,6 +319,131 @@ test_that("fetch_all_metadata json and data.frame stay aligned after filter", {
 
     expect_equal(length(result$subject), nrow(to_df(result)$subject))
     expect_equal(to_df(result)$subject$id, c(2, 4))
+
+    assignInNamespace("get_node_order", original_get_node_order, ns = "gen3metadata")
+    unlink(tmp_key_file)
+    webmockr::stub_registry_clear()
+})
+
+
+# ----------------------------------------------------------------------------
+# Output behaviour tests: soft no-data classification, aggregated warnings,
+# verbose = FALSE silence
+# ----------------------------------------------------------------------------
+
+test_that("fetch_all_metadata raises one aggregated warning for genuine failures", {
+
+    # Background: HTTP errors from the export endpoint are benign (Gen3
+    # rejects administrative nodes that way) and no longer warn. A node whose
+    # request errors out entirely (network failure, DNS, etc.) is a genuine
+    # failure — those must surface as exactly ONE aggregated warning at the
+    # end, instead of the old one-warning-per-node wall.
+
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+
+    mock_get_node_order <- function(key_file) c("subject", "sample")
+    original_get_node_order <- gen3metadata::get_node_order
+    assignInNamespace("get_node_order", mock_get_node_order, ns = "gen3metadata")
+
+    mock_post <- stub_request("post", uri = "https://data.test.biocommons.org.au/user/credentials/cdis/access_token")
+    mock_post <- to_return(mock_post,
+                           body = "{\"access_token\": \"fake_access_token\"}",
+                           status = 200,
+                           headers = list("Content-Type" = "application/json"))
+
+    # subject succeeds; sample's GET is NOT stubbed, so webmockr raises an
+    # error for it — simulating a genuine network-level failure.
+    mock_get_subject <- stub_request("get", uri = "https://data.test.biocommons.org.au/api/v0/submission/program1/AusDiab/export/?node_label=subject&format=json")
+    mock_get_subject <- to_return(mock_get_subject,
+                                  body = "{\"data\": [{\"id\": 1}]}",
+                                  status = 200,
+                                  headers = list("Content-Type" = "application/json"))
+
+    expect_warning(
+        result <- suppressMessages(fetch_all_metadata(tmp_key_file, "program1", "AusDiab")),
+        "1 node\\(s\\) failed"
+    )
+
+    expect_true("subject" %in% names(result))
+    expect_false("sample" %in% names(result))
+
+    assignInNamespace("get_node_order", original_get_node_order, ns = "gen3metadata")
+    unlink(tmp_key_file)
+    webmockr::stub_registry_clear()
+})
+
+
+test_that("fetch_all_metadata with verbose = FALSE emits no messages", {
+
+    # Background: callers embedding fetch_all_metadata in scripts or Rmd
+    # documents need a supported quiet mode. verbose = FALSE must suppress
+    # the progress bar, all progress messages and the final summary — a
+    # clean run should produce no message conditions at all.
+
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+
+    mock_get_node_order <- function(key_file) c("subject")
+    original_get_node_order <- gen3metadata::get_node_order
+    assignInNamespace("get_node_order", mock_get_node_order, ns = "gen3metadata")
+
+    mock_post <- stub_request("post", uri = "https://data.test.biocommons.org.au/user/credentials/cdis/access_token")
+    mock_post <- to_return(mock_post,
+                           body = "{\"access_token\": \"fake_access_token\"}",
+                           status = 200,
+                           headers = list("Content-Type" = "application/json"))
+
+    mock_get_subject <- stub_request("get", uri = "https://data.test.biocommons.org.au/api/v0/submission/program1/AusDiab/export/?node_label=subject&format=json")
+    mock_get_subject <- to_return(mock_get_subject,
+                                  body = "{\"data\": [{\"id\": 1}]}",
+                                  status = 200,
+                                  headers = list("Content-Type" = "application/json"))
+
+    expect_no_message(
+        result <- fetch_all_metadata(tmp_key_file, "program1", "AusDiab", verbose = FALSE)
+    )
+    expect_true("subject" %in% names(result))
+
+    assignInNamespace("get_node_order", original_get_node_order, ns = "gen3metadata")
+    unlink(tmp_key_file)
+    webmockr::stub_registry_clear()
+})
+
+
+test_that("fetch_all_metadata keeps zero-record nodes and reports them as no data", {
+
+    # Background: a commons where a node has no data loaded yet returns 200
+    # with an empty data array. The node must stay in the result (empty
+    # data.frame, unchanged return shape) and be counted in the summary as
+    # "no data" — reassuring output, not an error.
+
+    tmp_key_file <- tempfile(fileext = ".json")
+    writeLines(fake_api_key, tmp_key_file)
+
+    mock_get_node_order <- function(key_file) c("subject")
+    original_get_node_order <- gen3metadata::get_node_order
+    assignInNamespace("get_node_order", mock_get_node_order, ns = "gen3metadata")
+
+    mock_post <- stub_request("post", uri = "https://data.test.biocommons.org.au/user/credentials/cdis/access_token")
+    mock_post <- to_return(mock_post,
+                           body = "{\"access_token\": \"fake_access_token\"}",
+                           status = 200,
+                           headers = list("Content-Type" = "application/json"))
+
+    mock_get_subject <- stub_request("get", uri = "https://data.test.biocommons.org.au/api/v0/submission/program1/AusDiab/export/?node_label=subject&format=json")
+    mock_get_subject <- to_return(mock_get_subject,
+                                  body = "{\"data\": []}",
+                                  status = 200,
+                                  headers = list("Content-Type" = "application/json"))
+
+    expect_message(
+        result <- fetch_all_metadata(tmp_key_file, "program1", "AusDiab"),
+        "nodes with no data: 1"
+    )
+
+    expect_true("subject" %in% names(result))
+    expect_equal(length(result$subject), 0)
 
     assignInNamespace("get_node_order", original_get_node_order, ns = "gen3metadata")
     unlink(tmp_key_file)

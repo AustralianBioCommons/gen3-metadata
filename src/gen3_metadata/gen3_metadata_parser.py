@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from gen3.auth import Gen3Auth
 from gen3.submission import Gen3Submission
 from gen3_validator.dict import DataDictionary
+from tqdm.auto import tqdm
 
 from gen3_metadata._filter import filter_records_by_data_release
 
@@ -139,14 +140,17 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
             credentials JSON string itself (auto-detected).
         program_name (str): The name of the program.
         project_code (str): The code of the project.
-        verbose (bool): Print progress to stdout. Defaults to True.
+        verbose (bool): Show a progress bar (stderr) and print key messages
+            plus a final summary to stdout. Defaults to True. When False,
+            nothing is written to the console; full per-node detail is
+            still recorded via ``logging`` either way.
         data_release (str, optional): Filter records by data release.
             Defaults to ``"latest"``.
             - ``"latest"`` (default): per node, inspect the
               ``data_release_date`` field and keep only records matching
-              the max ISO date. The selected date is logged per node.
+              the max ISO date. The selected date is printed per node.
               Nodes without a ``data_release_date`` field pass through
-              unchanged with a log message.
+              unchanged and are aggregated into a single summary note.
             - Any other string: exact, case-sensitive match on the
               top-level ``data_release`` field. Nodes without that field
               are passed through unchanged.
@@ -205,11 +209,24 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
 
     json_results = {}
     pd_results = {}
-    succeeded = []
-    failed = []
+    nodes_with_data = []
+    nodes_no_data = []  # (node_name, reason) — benign: HTTP-rejected or empty
+    nodes_failed = []   # (node_name, reason) — genuine problems only
+    passthrough_nodes = []  # nodes whose records had no release metadata
+    total_records = 0
 
-    for i, node_name in enumerate(nodes, 1):
-        log(f"  [{i}/{total}] fetching '{node_name}'...")
+    # Informational lines go through emit() so they print above the live
+    # progress bar (tqdm.write) instead of breaking it; per-node fetch detail
+    # is logger-only to keep log files complete without cluttering stdout.
+    def emit(msg):
+        logger.info(msg)
+        if verbose:
+            tqdm.write(msg)
+
+    progress = tqdm(nodes, desc="fetching nodes", unit="node", disable=not verbose)
+    for i, node_name in enumerate(progress, 1):
+        progress.set_postfix_str(node_name)
+        logger.info(f"fetch_all_metadata: [{i}/{total}] fetching '{node_name}'...")
         url = (
             f"{api_url}/api/v0/submission/{program_name}/{project_code}/"
             f"export/?node_label={node_name}&format=json"
@@ -221,13 +238,22 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
 
             raw_records = json_data.get("data") or []
             record_count = len(raw_records)
-            log(f"  [{i}/{total}] {node_name}: OK ({record_count} records)")
+            logger.info(
+                f"fetch_all_metadata: [{i}/{total}] {node_name}: "
+                f"OK ({record_count} records)"
+            )
+
+            def note_passthrough(msg, _node=node_name):
+                logger.info(msg)
+                passthrough_nodes.append(_node)
 
             filtered_records, _ = filter_records_by_data_release(
-                raw_records, data_release, node_name, log_fn=log
+                raw_records, data_release, node_name,
+                log_fn=emit, on_passthrough=note_passthrough,
             )
             if data_release is not None and len(filtered_records) != record_count:
-                log(f"  [{i}/{total}] {node_name}: filtered to "
+                logger.info(
+                    f"fetch_all_metadata: [{i}/{total}] {node_name}: filtered to "
                     f"{len(filtered_records)}/{record_count} records "
                     f"(data_release={data_release!r})")
 
@@ -236,24 +262,44 @@ def fetch_all_metadata(key_file, program_name, project_code, verbose=True, data_
                 pd_results[node_name] = pd.json_normalize(filtered_records)
             else:
                 pd_results[node_name] = pd.DataFrame()
-            succeeded.append(node_name)
+            if record_count:
+                nodes_with_data.append(node_name)
+                total_records += len(filtered_records)
+            else:
+                nodes_no_data.append((node_name, "0 records"))
         except requests.exceptions.HTTPError as e:
+            # The Gen3 export endpoint rejects administrative nodes (root,
+            # program, project, data_release) with 4xx/5xx — treat any HTTP
+            # error as "no data available", not a failure.
             status = getattr(e.response, "status_code", "?")
-            log(f"  [{i}/{total}] {node_name}: FAILED (HTTP {status})")
-            logger.warning(f"fetch_all_metadata: {node_name} -> HTTP {status}")
-            failed.append(node_name)
+            logger.info(
+                f"fetch_all_metadata: [{i}/{total}] {node_name}: "
+                f"HTTP {status} (no data available)"
+            )
+            nodes_no_data.append((node_name, f"HTTP {status}"))
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            log(f"  [{i}/{total}] {node_name}: FAILED (network: {type(e).__name__})")
             logger.warning(f"fetch_all_metadata: {node_name} -> network error: {e}")
-            failed.append(node_name)
+            nodes_failed.append((node_name, f"network: {type(e).__name__}"))
         except Exception as e:
-            log(f"  [{i}/{total}] {node_name}: FAILED ({e})")
             logger.warning(f"fetch_all_metadata: {node_name} -> {e}")
-            failed.append(node_name)
+            nodes_failed.append((node_name, str(e)))
+    progress.close()
 
-    log(f"fetch_all_metadata: done — {len(succeeded)}/{total} succeeded, {len(failed)} failed")
-    if failed:
-        log(f"fetch_all_metadata: failed nodes: {', '.join(failed)}")
+    log("fetch_all_metadata: done")
+    log(f"  nodes with data: {len(nodes_with_data)} ({total_records} records)")
+    no_data_names = ", ".join(name for name, _ in nodes_no_data)
+    log(f"  nodes with no data: {len(nodes_no_data)}"
+        + (f" ({no_data_names})" if nodes_no_data else ""))
+    log(f"  failed: {len(nodes_failed)}")
+    for name, reason in nodes_failed:
+        log(f"    - {name}: {reason}")
+    if data_release is not None and passthrough_nodes:
+        log(f"  note: no release metadata on {len(passthrough_nodes)} node(s); "
+            f"records passed through unchanged")
+    logger.info(
+        f"fetch_all_metadata: done — with_data={len(nodes_with_data)} "
+        f"no_data={len(nodes_no_data)} failed={len(nodes_failed)}"
+    )
 
     return MetadataCollection(json_results, pd_results)
 
@@ -447,7 +493,8 @@ class Gen3MetadataParser:
 
             raw_records = data.get("data") or []
             filtered_records, _ = filter_records_by_data_release(
-                raw_records, data_release, node_label, log_fn=_log_filter
+                raw_records, data_release, node_label, log_fn=_log_filter,
+                on_passthrough=self.logger.info,
             )
             data = {**data, "data": filtered_records}
 

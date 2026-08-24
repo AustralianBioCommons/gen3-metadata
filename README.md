@@ -75,13 +75,29 @@ Behavior per node:
 | any other string     | Keep records where `data_release` equals that string exactly. Log the selected version and date.            |
 | `None`               | No filtering. No filter log lines emitted.                                                                  |
 
-Nodes that have neither a `data_release` nor a `data_release_date` field (for example lookup/link nodes like `program` or `project`) are passed through unchanged, with an info log noting they were not filtered. Unparseable ISO dates in `"latest"` mode are skipped with a warning.
+Nodes that have neither a `data_release` nor a `data_release_date` field (for example lookup/link nodes like `program` or `project`) are passed through unchanged; they are counted in a single "no release metadata" note in the final summary (the per-node detail is still recorded at INFO level via `logging`). Unparseable ISO dates in `"latest"` mode are skipped with a warning.
 
 The same `data_release` argument is also available on `Gen3MetadataParser.fetch_data` and `fetch_data_json` for single-node fetches.
 
-### Logging and error handling
+### Progress, logging and error handling
 
-`fetch_all_metadata` prints per-node progress to stdout by default (`verbose=True`). If you want richer diagnostic output — filter decisions, authentication steps, `debug` messages — call `configure_logging()` once in your REPL or notebook to attach a stderr handler to the `gen3_metadata` logger:
+`fetch_all_metadata` shows a live progress bar (on stderr, via `tqdm`) and finishes with a short summary by default (`verbose=True`):
+
+```
+fetch_all_metadata: starting for program1/project1
+fetch_all_metadata: fetching data dictionary from data.test.biocommons.org.au...
+fetch_all_metadata: 17 nodes to fetch
+fetching nodes: 100%|██████████| 17/17 [00:14<00:00, core_metadata_collection]
+fetch_all_metadata: done
+  nodes with data: 13 (780 records)
+  nodes with no data: 4 (root, program, data_release, project)
+  failed: 0
+  note: no release metadata on 13 node(s); records passed through unchanged
+```
+
+Nodes the export endpoint rejects with an HTTP error (Gen3 does this for administrative nodes such as `root`, `program`, `project` and `data_release`) and nodes with zero records are reported as **nodes with no data** — they are expected on healthy commons and are not failures. Only network errors and unexpected exceptions count as **failed**, and those are listed under the summary with their reasons.
+
+Pass `verbose=False` for complete console silence; full per-node detail is always recorded through the `logging` framework. If you want richer diagnostic output — filter decisions, authentication steps, `debug` messages — call `configure_logging()` once in your REPL or notebook to attach a stderr handler to the `gen3_metadata` logger:
 
 ```python
 import logging
@@ -102,7 +118,7 @@ RuntimeError: Could not reach cad.staging.biocommons.org.au to fetch the Gen3
 data dictionary. Check VPN / network connectivity. Underlying error: ...
 ```
 
-Individual nodes that time out or return an HTTP error during the fetch loop are logged and skipped; the overall call completes with a final summary of which nodes succeeded and which failed.
+Individual nodes that hit a network error during the fetch loop are logged as warnings and skipped; the overall call always completes with the summary above.
 
 ### List nodes
 
@@ -262,24 +278,36 @@ Behavior per node:
 | any other string     | Keep records where `data_release` equals that string exactly. Emit selected version and date.   |
 | `NULL`               | No filtering. No filter messages emitted.                                                        |
 
-Nodes that have neither a `data_release` nor a `data_release_date` field are passed through unchanged with a message. Unparseable ISO dates in `"latest"` mode are skipped with a warning.
+Nodes that have neither a `data_release` nor a `data_release_date` field are passed through unchanged; they are counted in a single "no release metadata" note in the final summary rather than announced per node. Unparseable ISO dates in `"latest"` mode are skipped with a warning.
 
 The same `data_release` argument is also available on `fetch_data()` for single-node fetches.
 
-### Progress messages and error handling
+### Progress and error handling
 
-`fetch_all_metadata` emits per-node progress via `message()` (visible in interactive sessions and captured by knitr/RMarkdown by default). A DNS/VPN failure produces a clean `stop()` error rather than an `httr` traceback, e.g.:
+`fetch_all_metadata` shows a `cli` progress bar while fetching and finishes with a short summary:
 
 ```
-fetch_all_metadata: starting for program1/AusDiab
-fetch_all_metadata: fetching data dictionary...
+i fetch_all_metadata: starting for program1/AusDiab
+i fetch_all_metadata: fetching data dictionary...
+i fetch_all_metadata: 17 nodes to fetch
+v nodes with data: 13 (780 records)
+i nodes with no data: 4 (root, program, data_release, project)
+v failed: 0
+i note: no release metadata on 13 node(s) (study, subject, ...); records passed through unchanged
+```
+
+Nodes the export endpoint rejects with an HTTP error (Gen3 does this for administrative nodes such as `root`, `program`, `project` and `data_release`) and nodes with zero records are reported as **nodes with no data** — they are expected on healthy commons and are not failures, and no longer raise warnings. Only network errors and unexpected exceptions count as **failed**; those are listed in the summary and raised as a single aggregated `warning()` at the end.
+
+A DNS/VPN failure produces a clean `stop()` error rather than an `httr` traceback, e.g.:
+
+```
 Error: Could not fetch Gen3 data dictionary. Check VPN / network connectivity. Underlying error: ...
 ```
 
-All network calls (authentication, dictionary fetch, per-node fetch) have a 30-second timeout, so a flaky network surfaces quickly instead of hanging indefinitely. To silence the progress output:
+All network calls (authentication, dictionary fetch, per-node fetch) have a 30-second timeout, so a flaky network surfaces quickly instead of hanging indefinitely. To silence the progress output, pass `verbose = FALSE` (all output is also emitted as message-class conditions, so `suppressMessages()` works too):
 
 ``` r
-result <- suppressMessages(fetch_all_metadata(...))
+result <- fetch_all_metadata(..., verbose = FALSE)
 ```
 
 ### List nodes

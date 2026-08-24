@@ -33,12 +33,25 @@
 #' @param records A list of records (each element is itself a named list).
 #' @param data_release Filter value: \code{NULL}, \code{"latest"}, or a string.
 #' @param node_name Character string used in log messages.
+#' @param log_fn Single-argument function used for info-level notices (the
+#'   "selected ..." messages). Defaults to \code{message}.
+#' @param on_passthrough Single-argument function used for the lower-interest
+#'   "passing through unchanged" notices (no release metadata on the node, or
+#'   no parseable dates). Defaults to \code{log_fn}, preserving the historical
+#'   behavior; callers that aggregate these per-node notices (e.g.
+#'   \code{fetch_all_metadata}) pass a quieter sink here.
 #'
 #' @return A list \code{list(records = ..., keep_idx = ...)}.
 #'
 #' @keywords internal
 #' @noRd
-filter_records_by_data_release <- function(records, data_release, node_name) {
+filter_records_by_data_release <- function(records, data_release, node_name,
+                                           log_fn = message,
+                                           on_passthrough = NULL) {
+
+    if (is.null(on_passthrough)) {
+        on_passthrough <- log_fn
+    }
 
     if (is.null(data_release)) {
         return(list(records = records, keep_idx = seq_along(records)))
@@ -49,23 +62,23 @@ filter_records_by_data_release <- function(records, data_release, node_name) {
     }
 
     if (identical(data_release, "latest")) {
-        return(.filter_latest(records, node_name))
+        return(.filter_latest(records, node_name, log_fn, on_passthrough))
     }
 
-    .filter_exact(records, data_release, node_name)
+    .filter_exact(records, data_release, node_name, log_fn, on_passthrough)
 }
 
 
 #' Exact match on top-level data_release field.
 #' @keywords internal
 #' @noRd
-.filter_exact <- function(records, data_release, node_name) {
+.filter_exact <- function(records, data_release, node_name, log_fn, on_passthrough) {
 
     has_field <- any(vapply(records,
                             function(r) "data_release" %in% names(r),
                             logical(1)))
     if (!has_field) {
-        message(sprintf(
+        on_passthrough(sprintf(
             "node '%s': no 'data_release' field found on any record; passing through unchanged (data_release=%s)",
             node_name, shQuote(data_release)
         ))
@@ -85,7 +98,7 @@ filter_records_by_data_release <- function(records, data_release, node_name) {
     filtered <- records[keep_idx]
     date_summary <- .summarize_field(filtered, "data_release_date")
     date_part <- if (!is.null(date_summary)) sprintf(" data_release_date=%s", date_summary) else ""
-    message(sprintf(
+    log_fn(sprintf(
         "node '%s': selected data_release=%s%s (%d/%d records)",
         node_name, shQuote(data_release), date_part, length(filtered), length(records)
     ))
@@ -97,13 +110,13 @@ filter_records_by_data_release <- function(records, data_release, node_name) {
 #' Select latest ISO date in data_release_date.
 #' @keywords internal
 #' @noRd
-.filter_latest <- function(records, node_name) {
+.filter_latest <- function(records, node_name, log_fn, on_passthrough) {
 
     has_field <- any(vapply(records,
                             function(r) "data_release_date" %in% names(r),
                             logical(1)))
     if (!has_field) {
-        message(sprintf(
+        on_passthrough(sprintf(
             "node '%s': no 'data_release_date' field found on any record; passing through unchanged (data_release='latest')",
             node_name
         ))
@@ -129,7 +142,7 @@ filter_records_by_data_release <- function(records, data_release, node_name) {
     }
 
     if (all(is.na(parsed))) {
-        message(sprintf(
+        on_passthrough(sprintf(
             "node '%s': no parseable data_release_date values; passing through unchanged",
             node_name
         ))
@@ -145,7 +158,7 @@ filter_records_by_data_release <- function(records, data_release, node_name) {
 
     version_summary <- .summarize_field(filtered, "data_release")
     version_part <- if (!is.null(version_summary)) sprintf(" data_release=%s", version_summary) else ""
-    message(sprintf(
+    log_fn(sprintf(
         "node '%s': selected data_release_date=%s%s (%d/%d records)",
         node_name, max_raw, version_part, length(filtered), length(records)
     ))

@@ -8,7 +8,8 @@ fetch_all_metadata(
   key_file,
   program_name,
   project_code,
-  data_release = "latest"
+  data_release = "latest",
+  verbose = TRUE
 )
 }
 \arguments{
@@ -26,13 +27,20 @@ Defaults to \code{"latest"}.
     \code{data_release_date} field and keep only records matching the
     max ISO date. The selected date is emitted once per node via
     \code{message()}. Nodes without a \code{data_release_date} field
-    pass through unchanged with a message.
+    pass through unchanged and are aggregated into a single summary
+    note at the end.
   \item Any other string: exact, case-sensitive match on the top-level
     \code{data_release} field. Nodes without that field pass through
     unchanged.
   \item \code{NULL}: disable filtering entirely (returns all records,
     no messages).
 }}
+
+\item{verbose}{Logical: show a progress bar and emit progress messages
+plus a final summary. Defaults to \code{TRUE}. All console output is
+emitted as message-class conditions, so \code{suppressMessages()}
+silences it too. Full detail on genuine failures (network errors and
+the like) is still raised as a single aggregated \code{warning()}.}
 }
 \value{
 A metadata_collection object. Access nodes via \code{result$subject}.
@@ -43,4 +51,12 @@ Retrieves nodes in topological order using \code{get_node_order} and fetches
 data for each node. Returns a metadata_collection object where nodes are
 accessible via \code{$} (raw JSON as nested lists). Call \code{to_df()} on
 the result to get a similar object with data.frames.
+}
+\details{
+Nodes the export endpoint rejects with an HTTP error (Gen3 does
+  this for administrative nodes such as \code{root}, \code{program},
+  \code{project} and \code{data_release}) and nodes with zero records are
+  reported as "no data available" in the final summary -- they are not
+  failures. Only network errors and unexpected exceptions are counted as
+  failed, listed in the summary, and raised as one aggregated warning.
 }

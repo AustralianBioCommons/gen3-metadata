@@ -305,7 +305,7 @@ def test_fetch_all_metadata(mock_auth_class, mock_sub_class, mock_get, mock_gen3
 @patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
 @patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
 def test_fetch_all_metadata_skips_failed_nodes(mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary):
-    """Test that fetch_all_metadata skips nodes that fail and continues."""
+    """Test that fetch_all_metadata omits HTTP-rejected (no-data) nodes and continues."""
     mock_auth_instance = MagicMock()
     mock_auth_instance.endpoint = "https://test.example.com"
     mock_auth_class.return_value = mock_auth_instance
@@ -341,9 +341,226 @@ def test_fetch_all_metadata_skips_failed_nodes(mock_auth_class, mock_sub_class, 
     assert not hasattr(result.to_df(), "sample")
 
 
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_http_error_is_no_data(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, capsys, caplog
+):
+    """An HTTP error from the export endpoint is a benign "no data" outcome.
+
+    Gen3 rejects exports of administrative nodes (root, program, project,
+    data_release) with 4xx/5xx even on healthy commons, so these must not be
+    presented as failures: no "FAILED" on stdout, no WARNING log record, and
+    the summary should list the node under "nodes with no data". This is the
+    core of the calmer-output behavior — a healthy run must read as healthy.
+    """
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    # sample is rejected with 400 (like an administrative node); others succeed
+    def fake_get(url, **kwargs):
+        resp = MagicMock()
+        if "node_label=sample" in url:
+            resp.status_code = 400
+            err = requests.exceptions.HTTPError("400 Bad Request")
+            err.response = resp
+            resp.raise_for_status.side_effect = err
+        else:
+            resp.status_code = 200
+            resp.json.return_value = {"data": [{"id": 1}]}
+            resp.raise_for_status.return_value = None
+        return resp
+
+    mock_get.side_effect = fake_get
+
+    with caplog.at_level(logging.WARNING, logger="gen3_metadata"):
+        result = fetch_all_metadata("fake_credentials.json", "prog", "proj", verbose=True)
+
+    captured = capsys.readouterr()
+    assert "nodes with no data: 1 (sample)" in captured.out
+    assert "failed: 0" in captured.out
+    assert "FAILED" not in captured.out
+    # No warning-level log record — this is not an error condition
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    # HTTP-rejected node stays out of the result (unchanged semantics)
+    assert not hasattr(result, "sample")
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_zero_records_is_no_data(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, capsys
+):
+    """A 200 response with zero records counts as "no data", not a failure.
+
+    A commons where a node simply has no data loaded yet returns an empty
+    data array. The node must still be present in the result (with an empty
+    DataFrame, preserving the existing return shape) but the summary should
+    count it under "nodes with no data" so users aren't alarmed.
+    """
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {"data": []}
+    mock_get.return_value.raise_for_status.return_value = None
+
+    result = fetch_all_metadata("fake_credentials.json", "prog", "proj", verbose=True)
+
+    captured = capsys.readouterr()
+    assert "nodes with data: 0 (0 records)" in captured.out
+    assert "nodes with no data: 4" in captured.out
+    assert "failed: 0" in captured.out
+    # Empty nodes remain in the result with an empty DataFrame
+    assert result.subject["data"] == []
+    assert result.to_df().subject.empty
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_network_error_is_failed(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, capsys, caplog
+):
+    """A network timeout is a genuine failure: summarized and logged as WARNING.
+
+    Unlike HTTP rejections (benign), a timeout means the fetch really did not
+    happen, so it must appear in the summary's "failed" section with the node
+    name and reason, and produce a warning-level log record for log files.
+    """
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    def fake_get(url, **kwargs):
+        if "node_label=sample" in url:
+            raise requests.exceptions.Timeout("timed out")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"data": [{"id": 1}]}
+        resp.raise_for_status.return_value = None
+        return resp
+
+    mock_get.side_effect = fake_get
+
+    with caplog.at_level(logging.WARNING, logger="gen3_metadata"):
+        result = fetch_all_metadata("fake_credentials.json", "prog", "proj", verbose=True)
+
+    captured = capsys.readouterr()
+    assert "failed: 1" in captured.out
+    assert "- sample: network: Timeout" in captured.out
+    assert any("network error" in rec.message for rec in caplog.records)
+    assert not hasattr(result, "sample")
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_passthrough_aggregated(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, capsys, caplog
+):
+    """Per-node "passing through unchanged" notices are aggregated, not printed.
+
+    When records carry no data_release_date field the filter passes them
+    through — previously announced per node, cluttering the output. Now the
+    per-node notice goes to the logger only (INFO), and stdout gets a single
+    aggregate note counting the affected nodes.
+    """
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    # Records without any release metadata → filter passes through
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {"data": [{"id": 1}]}
+    mock_get.return_value.raise_for_status.return_value = None
+
+    with caplog.at_level(logging.INFO, logger="gen3_metadata"):
+        fetch_all_metadata("fake_credentials.json", "prog", "proj", verbose=True)
+
+    captured = capsys.readouterr()
+    assert "passing through unchanged" not in captured.out
+    assert "note: no release metadata on 4 node(s)" in captured.out
+    # Detail still lands in the log records for log files
+    assert any("passing through unchanged" in rec.message for rec in caplog.records)
+
+
+@patch("requests.get")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Submission")
+@patch("gen3_metadata.gen3_metadata_parser.Gen3Auth")
+def test_fetch_all_metadata_verbose_false_is_silent(
+    mock_auth_class, mock_sub_class, mock_get, mock_gen3_dictionary, capsys
+):
+    """verbose=False produces no console output at all.
+
+    Callers embedding fetch_all_metadata in scripts or notebooks rely on
+    verbose=False being completely quiet on stdout (detail still goes to the
+    logging framework). The progress bar must also be disabled.
+    """
+    mock_auth_class.return_value.endpoint = "https://test.example.com"
+
+    mock_sub_instance = MagicMock()
+    mock_sub_instance.get_dictionary_all.return_value = mock_gen3_dictionary
+    mock_sub_class.return_value = mock_sub_instance
+
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {"data": [{"id": 1, "data_release_date": "2024-06-01"}]}
+    mock_get.return_value.raise_for_status.return_value = None
+
+    fetch_all_metadata("fake_credentials.json", "prog", "proj", verbose=False)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
 # ---------------------------------------------------------------------------
 # Helper-level tests: filter_records_by_data_release
 # ---------------------------------------------------------------------------
+
+
+def test_filter_records_on_passthrough_routing():
+    """Passthrough notices go to on_passthrough; "selected" stays on log_fn.
+
+    The filter distinguishes two kinds of notice: "selected <release>" (always
+    interesting) and "passing through unchanged" (benign, aggregated by
+    callers). This test proves the routing: with both sinks supplied, the
+    passthrough message must reach only on_passthrough, and a filtering run
+    must send its "selected" message only to log_fn.
+    """
+    log_messages = []
+    passthrough_messages = []
+
+    # No release metadata → passthrough notice
+    filter_records_by_data_release(
+        [{"id": 1}], "latest", "subject",
+        log_fn=log_messages.append, on_passthrough=passthrough_messages.append,
+    )
+    assert len(passthrough_messages) == 1
+    assert "passing through unchanged" in passthrough_messages[0]
+    assert log_messages == []
+
+    # Release metadata present → "selected" notice on log_fn only
+    log_messages.clear()
+    passthrough_messages.clear()
+    filter_records_by_data_release(
+        [{"id": 1, "data_release_date": "2024-06-01"}], "latest", "subject",
+        log_fn=log_messages.append, on_passthrough=passthrough_messages.append,
+    )
+    assert len(log_messages) == 1
+    assert "selected" in log_messages[0]
+    assert passthrough_messages == []
 
 
 def test_filter_records_data_release_none_passthrough():

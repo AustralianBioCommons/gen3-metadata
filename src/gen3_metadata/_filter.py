@@ -57,7 +57,8 @@ def _summarize_field(records, field):
     return f"{values[0]!r}, ... ({len(values)} unique)"
 
 
-def filter_records_by_data_release(records, data_release, node_name, log_fn=None):
+def filter_records_by_data_release(records, data_release, node_name, log_fn=None,
+                                   on_passthrough=None):
     """
     Filter a list of record dicts by ``data_release``.
 
@@ -95,6 +96,13 @@ def filter_records_by_data_release(records, data_release, node_name, log_fn=None
         ``logger.info``. Callers that also want messages on stdout should
         pass a closure that does both ``logger.info`` AND ``print``.
         ``fetch_all_metadata`` and ``Gen3MetadataParser.fetch_data`` do this.
+    on_passthrough : callable, optional
+        Single-argument callable used for the lower-interest "passing
+        through unchanged" messages (node has no release metadata, or no
+        parseable dates). Defaults to ``log_fn``, preserving the historical
+        behavior. Callers that aggregate these per-node notices into a
+        single summary (e.g. ``fetch_all_metadata``) pass a quieter sink
+        here while keeping ``log_fn`` for the "selected ..." messages.
 
     Returns
     -------
@@ -106,6 +114,8 @@ def filter_records_by_data_release(records, data_release, node_name, log_fn=None
     """
     if log_fn is None:
         log_fn = logger.info
+    if on_passthrough is None:
+        on_passthrough = log_fn
 
     if data_release is None:
         return list(records), list(range(len(records)))
@@ -114,16 +124,16 @@ def filter_records_by_data_release(records, data_release, node_name, log_fn=None
         return [], []
 
     if data_release == LATEST_SENTINEL:
-        return _filter_latest(records, node_name, log_fn)
+        return _filter_latest(records, node_name, log_fn, on_passthrough)
 
-    return _filter_exact(records, data_release, node_name, log_fn)
+    return _filter_exact(records, data_release, node_name, log_fn, on_passthrough)
 
 
-def _filter_exact(records, data_release, node_name, log_fn):
+def _filter_exact(records, data_release, node_name, log_fn, on_passthrough):
     """Filter on exact match against the top-level ``data_release`` field."""
     has_field = any("data_release" in rec for rec in records)
     if not has_field:
-        log_fn(
+        on_passthrough(
             f"node '{node_name}': no 'data_release' field found on any record; "
             f"passing through unchanged (data_release={data_release!r})"
         )
@@ -155,11 +165,11 @@ def _filter_exact(records, data_release, node_name, log_fn):
     return filtered, keep_idx
 
 
-def _filter_latest(records, node_name, log_fn):
+def _filter_latest(records, node_name, log_fn, on_passthrough):
     """Pick the max ISO date in data_release_date and filter to that."""
     has_field = any("data_release_date" in rec for rec in records)
     if not has_field:
-        log_fn(
+        on_passthrough(
             f"node '{node_name}': no 'data_release_date' field found on any record; "
             f"passing through unchanged (data_release='latest')"
         )
@@ -188,7 +198,7 @@ def _filter_latest(records, node_name, log_fn):
 
     parseable_dts = [p[2] for p in parsed if p[2] is not None]
     if not parseable_dts:
-        log_fn(
+        on_passthrough(
             f"node '{node_name}': no parseable data_release_date values; "
             f"passing through unchanged"
         )
